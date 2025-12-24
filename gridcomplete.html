@@ -16,7 +16,6 @@
     <script>
         let VALID_WORDS = new Set();
         const COLORS = [0xFF6B6B,0xFECA57,0x48DBFB,0x1DD1A1,0xEE5A6F,0xC44569,0xF97F51,0x5F27CD,0x00D2D3,0x54A0FF];
-
     let WORDS_LOADED = false;
 
     // Load words from your GitHub repo
@@ -587,16 +586,20 @@
         createCheckButton() {
             const {width, height} = this.cameras.main;
             
-            // Position check button directly above keyboard with small gap
-            const keySize = Math.floor(Math.min(this.cellSize * 0.55, width * 0.98 / 11));
-            const spacing = keySize * 1.08;
-            const totalKeyboardHeight = 4 * spacing;
-            const keyboardTop = height - totalKeyboardHeight;
+            // Calculate keyboard position to place button right above it
+            const keySize = Math.floor(Math.min(this.cellSize * 0.5, width * 0.98 / 11));
+            const verticalSpacing = keySize * 1.02;
+            const deleteKeyHeight = keySize;
+            const bottomPadding = 5;
+            
+            // Calculate where keyboard actually starts
+            const deleteKeyY = height - deleteKeyHeight / 2 - bottomPadding;
+            const topOfKeyboard = deleteKeyY - deleteKeyHeight / 2 - verticalSpacing / 2 - (3 * verticalSpacing) - keySize / 2;
             
             const buttonWidth = width * 0.7;
-            const buttonHeight = 60 * this.uiScale;
-            const gap = 10 * this.uiScale;
-            const buttonY = keyboardTop - buttonHeight / 2 - gap;
+            const buttonHeight = 55 * this.uiScale;
+            const gap = 12 * this.uiScale;
+            const buttonY = topOfKeyboard - gap - buttonHeight / 2;
 
             this.add.rectangle(width / 2 + 3, buttonY + 3, buttonWidth, buttonHeight, 0x000000, 0.3);
 
@@ -605,7 +608,7 @@
 
             this.add.text(width / 2, buttonY, 'CHECK SOLUTION ✓', {
                 fontFamily: 'Arial Black',
-                fontSize: `${Math.floor(22 * this.uiScale)}px`,
+                fontSize: `${Math.floor(20 * this.uiScale)}px`,
                 color: '#ffffff',
                 stroke: '#000000',
                 strokeThickness: Math.floor(4 * this.uiScale)
@@ -1045,6 +1048,5 @@
 
     new Phaser.Game(config);
 </script>
-
 </body>
 </html>
