@@ -14,7 +14,7 @@
 <body>
     <div id="game-container"></div>
     <script>
-        let VALID_WORDS = new Set(['cat','dog','bat','rat','mat','hat','sat','pat','the','and','for','are','but','not','you','all','can','had','her','was','one','our','out','day','get','has','him','his','how','man','new','now','old','see','two','way','who','boy','did','its','let','put','say','she','too','use','word','words','time','very','when','your','come','made','make','star','stars','game','grid','play','letter','cats','ants','tars','care','race','acre','pear','rear','tear','wear','gear','dear','sear','year','bean','lean','mean','wean','bead','lead','read','beat','feat','heat','meat','neat','peat','seat','ten','set','net','wet','bet','pet','met','yet','den','pen','hen','men','bed','red','fed','wed','ted','cab','tab','dab','jab','nab','gab','cad','dad','had','lad','mad','pad','sad','tad','bag','gag','hag','jag','lag','nag','rag','sag','tag','wag']);
+        let VALID_WORDS = new Set();
         const COLORS = [0xFF6B6B,0xFECA57,0x48DBFB,0x1DD1A1,0xEE5A6F,0xC44569,0xF97F51,0x5F27CD,0x00D2D3,0x54A0FF];
 
     let WORDS_LOADED = false;
@@ -156,20 +156,22 @@
                 this.createGridSizeSelector(width/2, titleHeight*0.75);
             }
 
-            // Calculate layout - keyboard at bottom, grid in center
-            const keyboardHeight = height * 0.25;
-            const checkButtonHeight = 60 * this.uiScale;
-            const availableGridHeight = height - titleHeight - keyboardHeight - checkButtonHeight - (height * 0.08);
+            // Calculate layout - keyboard flush at bottom, check button above it
+            const keyboardHeight = height * 0.28; // Larger keyboard area
+            const checkButtonHeight = 65 * this.uiScale;
+            const checkButtonMargin = height * 0.015;
+            
+            const availableGridHeight = height - titleHeight - keyboardHeight - checkButtonHeight - checkButtonMargin - (height * 0.04);
             
             this.cellSize = Math.floor(
-                Math.min(availableGridHeight / this.gridSize, width * 0.85 / this.gridSize)
+                Math.min(availableGridHeight / this.gridSize, width * 0.9 / this.gridSize)
             );
 
             this.startX = (width - this.cellSize * this.gridSize) / 2;
             // Center the grid vertically in available space
-            const topSpace = titleHeight + height * 0.04;
+            const topSpace = titleHeight + height * 0.02;
             const gridHeight = this.cellSize * this.gridSize;
-            const bottomSpace = height - keyboardHeight - checkButtonHeight - height * 0.04;
+            const bottomSpace = height - keyboardHeight - checkButtonHeight - checkButtonMargin;
             this.startY = topSpace + (bottomSpace - topSpace - gridHeight) / 2;
 
             this.generateValidGrid();
@@ -190,8 +192,8 @@
         }
 
         createGridSizeSelector(x, y) {
-            const buttonWidth = 40*this.uiScale;
-            const spacing = 10*this.uiScale;
+            const buttonWidth = 55*this.uiScale;  // Bigger buttons
+            const spacing = 15*this.uiScale;      // More spacing
             const sizes = [3,4,5,6];
             const startX = x - ((sizes.length*buttonWidth + (sizes.length-1)*spacing)/2);
 
@@ -199,20 +201,37 @@
                 const btnX = startX + i*(buttonWidth+spacing) + buttonWidth/2;
                 const isSelected = size === this.gridSize;
 
-                const btn = this.add.rectangle(btnX, y, buttonWidth, buttonWidth*0.8, 
+                const btn = this.add.rectangle(btnX, y, buttonWidth, buttonWidth*0.85, 
                     isSelected ? 0x1dd1a1 : 0x64748b).setInteractive();
-                btn.setStrokeStyle(2*this.uiScale, isSelected ? 0x10ac84 : 0x475569);
+                btn.setStrokeStyle(3*this.uiScale, isSelected ? 0x10ac84 : 0x475569);
 
-                this.add.text(btnX, y, `${size}x${size}`, {
+                this.add.text(btnX, y, `${size}×${size}`, {  // Using × symbol
                     fontFamily: 'Arial Black',
-                    fontSize: `${Math.floor(14*this.uiScale)}px`,
-                    color: '#ffffff'
+                    fontSize: `${Math.floor(18*this.uiScale)}px`,  // Bigger text
+                    color: '#ffffff',
+                    stroke: '#000000',
+                    strokeThickness: Math.floor(3*this.uiScale)
                 }).setOrigin(0.5);
 
                 btn.on('pointerdown', () => {
                     if(size !== this.gridSize) {
-                        this.scene.restart({gridSize: size});
+                        this.scene.restart({
+                            gridSize: size, 
+                            isDailyMode: this.isDailyMode,
+                            isFreeMode: this.isFreeMode
+                        });
                     }
+                });
+
+                // Hover effect
+                btn.on('pointerover', () => {
+                    if(size !== this.gridSize) {
+                        this.tweens.add({targets: btn, scaleX: 1.1, scaleY: 1.1, duration: 100});
+                    }
+                });
+
+                btn.on('pointerout', () => {
+                    this.tweens.add({targets: btn, scaleX: 1, scaleY: 1, duration: 100});
                 });
             });
         }
@@ -568,25 +587,25 @@
         createCheckButton() {
             const {width, height} = this.cameras.main;
             
-            // Position check button above keyboard
-            const keyboardBottomMargin = height * 0.02;
-            const keySize = Math.floor(Math.min(this.cellSize * 0.5, width * 0.95 / 11));
-            const spacing = keySize * 1.1;
-            const totalKeyboardHeight = 3 * spacing * 0.95 + spacing;
-            const keyboardTop = height - keyboardBottomMargin - totalKeyboardHeight;
+            // Position check button directly above keyboard with small gap
+            const keySize = Math.floor(Math.min(this.cellSize * 0.55, width * 0.98 / 11));
+            const spacing = keySize * 1.08;
+            const totalKeyboardHeight = 4 * spacing;
+            const keyboardTop = height - totalKeyboardHeight;
             
-            const buttonWidth = width * 0.6;
-            const buttonHeight = 52 * this.uiScale;
-            const buttonY = keyboardTop - buttonHeight / 2 - height * 0.02;
+            const buttonWidth = width * 0.7;
+            const buttonHeight = 60 * this.uiScale;
+            const gap = 10 * this.uiScale;
+            const buttonY = keyboardTop - buttonHeight / 2 - gap;
 
             this.add.rectangle(width / 2 + 3, buttonY + 3, buttonWidth, buttonHeight, 0x000000, 0.3);
 
             const btn = this.add.rectangle(width / 2, buttonY, buttonWidth, buttonHeight, 0x1dd1a1).setInteractive();
             btn.setStrokeStyle(4 * this.uiScale, 0x10ac84);
 
-            this.add.text(width / 2, buttonY, 'CHECK ✓', {
+            this.add.text(width / 2, buttonY, 'CHECK SOLUTION ✓', {
                 fontFamily: 'Arial Black',
-                fontSize: `${Math.floor(24 * this.uiScale)}px`,
+                fontSize: `${Math.floor(22 * this.uiScale)}px`,
                 color: '#ffffff',
                 stroke: '#000000',
                 strokeThickness: Math.floor(4 * this.uiScale)
@@ -595,6 +614,15 @@
             btn.on('pointerdown', () => {
                 this.checkSolution();
                 this.tweens.add({targets: btn, y: buttonY + 3, duration: 50, yoyo: true});
+            });
+
+            // Hover effect
+            btn.on('pointerover', () => {
+                this.tweens.add({targets: btn, scaleX: 1.02, scaleY: 1.02, duration: 100});
+            });
+
+            btn.on('pointerout', () => {
+                this.tweens.add({targets: btn, scaleX: 1, scaleY: 1, duration: 100});
             });
         }
 
