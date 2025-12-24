@@ -14,10 +14,9 @@
 <body>
     <div id="game-container"></div>
     <script>
-        const VALID_WORDS = new Set(['cat','dog','bat','rat','mat','hat','sat','pat','the','and','for','are','but','not','you','all','can','had','her','was','one','our','out','day','get','has','him','his','how','man','new','now','old','see','two','way','who','boy','did','its','let','put','say','she','too','use','word','words','time','very','when','your','come','made','make','star','stars','game','grid','play','letter','cats','ants','tars','care','race','acre','pear','rear','tear','wear','gear','dear','sear','year','bean','lean','mean','wean','bead','lead','read','beat','feat','heat','meat','neat','peat','seat','ten','set','net','wet','bet','pet','met','yet','den','pen','hen','men','bed','red','fed','wed','ted','cab','tab','dab','jab','nab','gab','cad','dad','had','lad','mad','pad','sad','tad','bag','gag','hag','jag','lag','nag','rag','sag','tag','wag']);
+        let VALID_WORDS = new Set(['cat','dog','bat','rat','mat','hat','sat','pat','the','and','for','are','but','not','you','all','can','had','her','was','one','our','out','day','get','has','him','his','how','man','new','now','old','see','two','way','who','boy','did','its','let','put','say','she','too','use','word','words','time','very','when','your','come','made','make','star','stars','game','grid','play','letter','cats','ants','tars','care','race','acre','pear','rear','tear','wear','gear','dear','sear','year','bean','lean','mean','wean','bead','lead','read','beat','feat','heat','meat','neat','peat','seat','ten','set','net','wet','bet','pet','met','yet','den','pen','hen','men','bed','red','fed','wed','ted','cab','tab','dab','jab','nab','gab','cad','dad','had','lad','mad','pad','sad','tad','bag','gag','hag','jag','lag','nag','rag','sag','tag','wag']);
         const COLORS = [0xFF6B6B,0xFECA57,0x48DBFB,0x1DD1A1,0xEE5A6F,0xC44569,0xF97F51,0x5F27CD,0x00D2D3,0x54A0FF];
 
-    let VALID_WORDS = new Set();
     let WORDS_LOADED = false;
 
     // Load words from your GitHub repo
