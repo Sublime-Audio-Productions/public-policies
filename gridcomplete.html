@@ -1,0 +1,936 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Grid Complete - Classic Mode</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/phaser/3.55.2/phaser.min.js"></script>
+    <style>
+        body { margin: 0; padding: 0; overflow: hidden; background: #1a1a2e; }
+        #game-container { display: flex; justify-content: center; align-items: center; width: 100vw; height: 100vh; }
+    </style>
+</head>
+<body>
+    <div id="game-container"></div>
+    <script>
+    import words from './assets/words.json' 
+        const VALID_WORDS = new Set(['cat','dog','bat','rat','mat','hat','sat','pat','the','and','for','are','but','not','you','all','can','had','her','was','one','our','out','day','get','has','him','his','how','man','new','now','old','see','two','way','who','boy','did','its','let','put','say','she','too','use','word','words','time','very','when','your','come','made','make','star','stars','game','grid','play','letter','cats','ants','tars','care','race','acre','pear','rear','tear','wear','gear','dear','sear','year','bean','lean','mean','wean','bead','lead','read','beat','feat','heat','meat','neat','peat','seat','ten','set','net','wet','bet','pet','met','yet','den','pen','hen','men','bed','red','fed','wed','ted','cab','tab','dab','jab','nab','gab','cad','dad','had','lad','mad','pad','sad','tad','bag','gag','hag','jag','lag','nag','rag','sag','tag','wag']);
+        const COLORS = [0xFF6B6B,0xFECA57,0x48DBFB,0x1DD1A1,0xEE5A6F,0xC44569,0xF97F51,0x5F27CD,0x00D2D3,0x54A0FF];
+
+```
+    // Daily challenges - in production, this would be loaded from a JSON file
+    const DAILY_CHALLENGES = {
+        "2025-01-15": {
+            "3": { letter: "W", row: 1, col: 1 },
+            "4": { letter: "S", row: 0, col: 2 },
+            "5": { letter: "T", row: 2, col: 2 },
+            "6": { letter: "R", row: 1, col: 3 }
+        },
+        "2025-01-16": {
+            "3": { letter: "C", row: 0, col: 0 },
+            "4": { letter: "A", row: 2, col: 1 },
+            "5": { letter: "D", row: 3, col: 3 },
+            "6": { letter: "M", row: 2, col: 4 }
+        },
+        "2025-01-17": {
+            "3": { letter: "T", row: 2, col: 2 },
+            "4": { letter: "B", row: 1, col: 0 },
+            "5": { letter: "P", row: 0, col: 4 },
+            "6": { letter: "L", row: 3, col: 2 }
+        }
+    };
+
+    function getTodayDate() {
+        const now = new Date();
+        return now.toISOString().split('T')[0];
+    }
+
+    function getDailyChallengeData(date, gridSize) {
+        const challenges = DAILY_CHALLENGES[date];
+        return challenges ? challenges[gridSize.toString()] : null;
+    }
+
+    function isDailyChallengeCompleted(date, gridSize) {
+        const key = `daily_${date}_${gridSize}`;
+        return localStorage.getItem(key) === 'completed';
+    }
+
+    function markDailyChallengeCompleted(date, gridSize) {
+        const key = `daily_${date}_${gridSize}`;
+        localStorage.setItem(key, 'completed');
+    }
+
+    function drawBricks(scene, w, h) {
+        const g = scene.add.graphics();
+        for(let y=0; y<h; y+=40) {
+            for(let x=0; x<w; x+=80) {
+                const off = (y/40)%2===0 ? 0 : 40;
+                g.fillStyle(0x1e3a5f, 1);
+                g.fillRect(x+off, y, 76, 36);
+                g.lineStyle(2, 0x2d5a8f);
+                g.strokeRect(x+off, y, 76, 36);
+            }
+        }
+    }
+
+    class ClassicModeScene extends Phaser.Scene {
+        constructor() {
+            super('ClassicMode');
+            this.gridSize = 5;
+            this.grid = [];
+            this.cells = [];
+            this.cellTexts = [];
+            this.cellColors = [];
+            this.selectedCell = null;
+            this.startingCell = null;
+            this.solutionGrid = null;
+            this.cellSize = 0;
+            this.startX = 0;
+            this.startY = 0;
+            this.uiScale = 1;
+            this.isDailyMode = false;
+            this.isFreeMode = false;
+            this.todayDate = getTodayDate();
+        }
+
+        init(data) {
+            this.gridSize = data.gridSize || 5;
+            this.isDailyMode = data.isDailyMode || false;
+            this.isFreeMode = data.isFreeMode || false;
+        }
+
+        create() {
+            const {width, height} = this.cameras.main;
+            const minDim = Math.min(width, height);
+            this.uiScale = minDim / 750;
+
+            drawBricks(this, width, height);
+
+            const titleHeight = height * 0.12;
+            this.add.rectangle(width/2, titleHeight/2, width, titleHeight, 0x2d3561);
+
+            const titleText = this.isDailyMode ? 'DAILY CHALLENGE' : (this.isFreeMode ? 'FREE MODE' : 'CLASSIC MODE');
+            this.add.text(width/2, titleHeight*0.35, titleText, {
+                fontFamily: 'Arial Black',
+                fontSize: `${Math.floor(32*this.uiScale)}px`,
+                color: '#ffffff',
+                stroke: '#000000',
+                strokeThickness: Math.floor(6*this.uiScale)
+            }).setOrigin(0.5);
+
+            if(this.isDailyMode) {
+                // Show date
+                this.add.text(width/2, titleHeight*0.7, this.todayDate, {
+                    fontFamily: 'Arial',
+                    fontSize: `${Math.floor(14*this.uiScale)}px`,
+                    color: '#feca57'
+                }).setOrigin(0.5);
+            } else {
+                this.createGridSizeSelector(width/2, titleHeight*0.75);
+            }
+
+            const gridAreaHeight = height * 0.42;
+            this.cellSize = Math.floor(Math.min(gridAreaHeight/this.gridSize, width*0.85/this.gridSize));
+            this.startX = (width - this.cellSize*this.gridSize)/2;
+            this.startY = titleHeight + height*0.02;
+
+            this.generateValidGrid();
+            
+            if(this.isDailyMode) {
+                this.setupDailyChallenge();
+            } else if(this.isFreeMode) {
+                this.setupFreeMode();
+            } else {
+                this.pickRandomStartingLetter();
+            }
+            
+            this.createGrid();
+            this.createKeyboard();
+            this.createBackButton();
+            this.createCheckButton();
+        }
+
+        createGridSizeSelector(x, y) {
+            const buttonWidth = 40*this.uiScale;
+            const spacing = 10*this.uiScale;
+            const sizes = [3,4,5,6];
+            const startX = x - ((sizes.length*buttonWidth + (sizes.length-1)*spacing)/2);
+
+            sizes.forEach((size, i) => {
+                const btnX = startX + i*(buttonWidth+spacing) + buttonWidth/2;
+                const isSelected = size === this.gridSize;
+
+                const btn = this.add.rectangle(btnX, y, buttonWidth, buttonWidth*0.8, 
+                    isSelected ? 0x1dd1a1 : 0x64748b).setInteractive();
+                btn.setStrokeStyle(2*this.uiScale, isSelected ? 0x10ac84 : 0x475569);
+
+                this.add.text(btnX, y, `${size}x${size}`, {
+                    fontFamily: 'Arial Black',
+                    fontSize: `${Math.floor(14*this.uiScale)}px`,
+                    color: '#ffffff'
+                }).setOrigin(0.5);
+
+                btn.on('pointerdown', () => {
+                    if(size !== this.gridSize) {
+                        this.scene.restart({gridSize: size});
+                    }
+                });
+            });
+        }
+
+        generateValidGrid() {
+            const wordsArray = Array.from(VALID_WORDS).filter(w => w.length === this.gridSize);
+            
+            if(wordsArray.length === 0) {
+                this.grid = Array.from({length: this.gridSize}, () => Array(this.gridSize).fill(''));
+                return;
+            }
+
+            let attempts = 100;
+            let success = false;
+            let solutionGrid = null;
+
+            for(let attempt = 0; attempt < attempts && !success; attempt++) {
+                const tempGrid = Array.from({length: this.gridSize}, () => Array(this.gridSize).fill(''));
+
+                for(let r = 0; r < this.gridSize; r++) {
+                    const word = Phaser.Math.RND.pick(wordsArray);
+                    for(let c = 0; c < this.gridSize; c++) {
+                        tempGrid[r][c] = word[c].toUpperCase();
+                    }
+                }
+
+                let allColumnsValid = true;
+                for(let c = 0; c < this.gridSize; c++) {
+                    const colWord = tempGrid.map(row => row[c]).join('').toLowerCase();
+                    if(!VALID_WORDS.has(colWord)) {
+                        allColumnsValid = false;
+                        break;
+                    }
+                }
+
+                if(allColumnsValid) {
+                    success = true;
+                    solutionGrid = tempGrid;
+                }
+            }
+
+            if(success) {
+                this.solutionGrid = solutionGrid;
+                this.grid = Array.from({length: this.gridSize}, () => Array(this.gridSize).fill(''));
+            } else {
+                this.grid = Array.from({length: this.gridSize}, () => Array(this.gridSize).fill(''));
+            }
+        }
+
+        pickRandomStartingLetter() {
+            if(!this.solutionGrid) {
+                const r = Phaser.Math.Between(0, this.gridSize-1);
+                const c = Phaser.Math.Between(0, this.gridSize-1);
+                this.startingCell = [r, c];
+                this.grid[r][c] = String.fromCharCode(65 + Phaser.Math.Between(0, 25));
+            } else {
+                const r = Phaser.Math.Between(0, this.gridSize-1);
+                const c = Phaser.Math.Between(0, this.gridSize-1);
+                
+                this.startingCell = [r, c];
+                this.grid[r][c] = this.solutionGrid[r][c];
+            }
+
+            for(let row = 0; row < this.gridSize; row++) {
+                for(let col = 0; col < this.gridSize; col++) {
+                    if(row !== this.startingCell[0] || col !== this.startingCell[1]) {
+                        this.selectedCell = [row, col];
+                        return;
+                    }
+                }
+            }
+        }
+
+        setupDailyChallenge() {
+            const challengeData = getDailyChallengeData(this.todayDate, this.gridSize);
+            
+            if(!challengeData || !this.solutionGrid) {
+                // Fallback to random if no challenge data
+                this.pickRandomStartingLetter();
+                return;
+            }
+
+            const {letter, row, col} = challengeData;
+            
+            // Use the specified starting position
+            this.startingCell = [row, col];
+            this.grid[row][col] = letter.toUpperCase();
+
+            // Select first empty cell
+            for(let r = 0; r < this.gridSize; r++) {
+                for(let c = 0; c < this.gridSize; c++) {
+                    if(r !== row || c !== col) {
+                        this.selectedCell = [r, c];
+                        return;
+                    }
+                }
+            }
+        }
+
+        setupFreeMode() {
+            // No starting letter - completely empty grid
+            this.startingCell = null;
+            // Select top-left cell by default
+            this.selectedCell = [0, 0];
+        }
+
+        createGrid() {
+            for(let r = 0; r < this.gridSize; r++) {
+                this.cells[r] = [];
+                this.cellTexts[r] = [];
+                this.cellColors[r] = [];
+
+                for(let c = 0; c < this.gridSize; c++) {
+                    const x = this.startX + c*this.cellSize;
+                    const y = this.startY + r*this.cellSize;
+                    const size = this.cellSize * 0.92;
+
+                    this.cellColors[r][c] = COLORS[Phaser.Math.Between(0, COLORS.length-1)];
+
+                    this.add.rectangle(x+4*this.uiScale, y+4*this.uiScale, size, size, 0x000000, 0.3).setOrigin(0);
+
+                    const isStartingCell = this.startingCell && this.startingCell[0]===r && this.startingCell[1]===c;
+
+                    const cell = this.add.rectangle(x, y, size, size,
+                        this.grid[r][c] ? this.cellColors[r][c] : 0x2d3561).setOrigin(0);
+
+                    cell.setStrokeStyle(
+                        isStartingCell ? 4*this.uiScale : 3*this.uiScale,
+                        isStartingCell ? 0xfeca57 : 0x1a1a2e
+                    );
+                    cell.setInteractive();
+
+                    const text = this.add.text(x+size/2, y+size/2, this.grid[r][c], {
+                        fontFamily: 'Arial Black',
+                        fontSize: `${Math.floor(this.cellSize*0.45)}px`,
+                        color: '#ffffff',
+                        stroke: '#000000',
+                        strokeThickness: Math.floor(4*this.uiScale)
+                    }).setOrigin(0.5);
+
+                    if(!isStartingCell) {
+                        cell.on('pointerdown', () => this.selectCell(r, c));
+                    }
+
+                    this.cells[r][c] = cell;
+                    this.cellTexts[r][c] = text;
+                }
+            }
+
+            if(this.selectedCell) {
+                const [r,c] = this.selectedCell;
+                this.cells[r][c].setStrokeStyle(5*this.uiScale, 0xfeca57);
+            }
+        }
+
+        selectCell(row, col) {
+            if(this.startingCell && this.startingCell[0]===row && this.startingCell[1]===col) {
+                return;
+            }
+
+            if(this.selectedCell) {
+                const [r,c] = this.selectedCell;
+                if(!this.startingCell || this.startingCell[0]!==r || this.startingCell[1]!==c) {
+                    this.cells[r][c].setStrokeStyle(3*this.uiScale, 0x1a1a2e);
+                }
+            }
+
+            this.selectedCell = [row, col];
+            this.cells[row][col].setStrokeStyle(5*this.uiScale, 0xfeca57);
+
+            this.tweens.add({
+                targets: this.cells[row][col],
+                scale: 1.08,
+                duration: 80,
+                yoyo: true
+            });
+        }
+
+        createKeyboard() {
+            const {width, height} = this.cameras.main;
+            const startY = this.startY + this.gridSize*this.cellSize + height*0.03;
+
+            const maxKeyboardWidth = width * 0.95;
+            const keySize = Math.floor(Math.min(this.cellSize*0.6, maxKeyboardWidth/11));
+            const spacing = keySize * 1.1;
+
+            const rows = [10, 9, 7];
+            const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
+
+            let index = 0;
+
+            rows.forEach((count, row) => {
+                const rowWidth = count * spacing;
+                const startX = (width - rowWidth)/2;
+
+                for(let i = 0; i < count && index < letters.length; i++) {
+                    const x = startX + i*spacing + spacing/2;
+                    const y = startY + row*spacing*0.95;
+
+                    this.add.rectangle(x+2*this.uiScale, y+2*this.uiScale, keySize, keySize, 0x000000, 0.3);
+
+                    const key = this.add.rectangle(x, y, keySize, keySize, 
+                        COLORS[index % COLORS.length]).setInteractive();
+                    key.setStrokeStyle(2*this.uiScale, 0x1a1a2e);
+
+                    const letter = letters[index];
+
+                    this.add.text(x, y, letter, {
+                        fontFamily: 'Arial Black',
+                        fontSize: `${Math.floor(keySize*0.5)}px`,
+                        color: '#ffffff',
+                        stroke: '#000000',
+                        strokeThickness: Math.floor(3*this.uiScale)
+                    }).setOrigin(0.5);
+
+                    key.on('pointerdown', () => {
+                        this.typeLetter(letter);
+                        this.tweens.add({targets: key, y: y+2, duration: 50, yoyo: true});
+                    });
+
+                    index++;
+                }
+            });
+
+            const delY = startY + 3*spacing*0.95;
+            const delWidth = keySize * 2.5;
+            const delX = width/2;
+
+            this.add.rectangle(delX+3*this.uiScale, delY+3*this.uiScale, delWidth, keySize, 0x000000, 0.3);
+
+            const delKey = this.add.rectangle(delX, delY, delWidth, keySize, 0xff6b6b).setInteractive();
+            delKey.setStrokeStyle(3*this.uiScale, 0xee5a6f);
+
+            this.add.text(delX, delY, 'DELETE', {
+                fontFamily: 'Arial Black',
+                fontSize: `${Math.floor(keySize*0.45)}px`,
+                color: '#ffffff',
+                stroke: '#000000',
+                strokeThickness: Math.floor(3*this.uiScale)
+            }).setOrigin(0.5);
+
+            delKey.on('pointerdown', () => {
+                this.deleteLetter();
+                this.tweens.add({targets: delKey, y: delY+2, duration: 50, yoyo: true});
+            });
+        }
+
+        typeLetter(letter) {
+            if(!this.selectedCell) {
+                outer: for(let r = 0; r < this.gridSize; r++) {
+                    for(let c = 0; c < this.gridSize; c++) {
+                        const isStarting = this.startingCell && this.startingCell[0]===r && this.startingCell[1]===c;
+                        if(!this.grid[r][c] && !isStarting) {
+                            this.selectCell(r, c);
+                            break outer;
+                        }
+                    }
+                }
+            }
+
+            if(!this.selectedCell) return;
+
+            const [r,c] = this.selectedCell;
+
+            if(this.startingCell && this.startingCell[0]===r && this.startingCell[1]===c) {
+                return;
+            }
+
+            this.grid[r][c] = letter;
+            this.cellTexts[r][c].setText(letter);
+            this.cells[r][c].setFillStyle(this.cellColors[r][c]);
+
+            this.tweens.add({
+                targets: this.cellTexts[r][c],
+                scale: 1.3,
+                duration: 100,
+                yoyo: true
+            });
+        }
+
+        deleteLetter() {
+            if(!this.selectedCell) return;
+
+            const [r,c] = this.selectedCell;
+
+            if(this.startingCell && this.startingCell[0]===r && this.startingCell[1]===c) {
+                this.showMessage('Cannot delete starting letter!', 0xff6b6b);
+                return;
+            }
+
+            this.grid[r][c] = '';
+            this.cellTexts[r][c].setText('');
+            this.cells[r][c].setFillStyle(0x2d3561);
+        }
+
+        createBackButton() {
+            const size = 48*this.uiScale;
+            const x = size;
+            const y = size;
+
+            this.add.rectangle(x+2, y+2, size*2, size, 0x000000, 0.3);
+
+            const btn = this.add.rectangle(x, y, size*2, size, 0x5f27cd).setInteractive();
+            btn.setStrokeStyle(3*this.uiScale, 0x341f97);
+
+            const buttonText = this.isDailyMode ? 'MENU' : 'RESET';
+            this.add.text(x, y, buttonText, {
+                fontFamily: 'Arial Black',
+                fontSize: `${Math.floor(16*this.uiScale)}px`,
+                color: '#ffffff',
+                stroke: '#000000',
+                strokeThickness: Math.floor(3*this.uiScale)
+            }).setOrigin(0.5);
+
+            btn.on('pointerdown', () => {
+                this.cameras.main.flash(200);
+                if(this.isDailyMode) {
+                    this.time.delayedCall(200, () => this.scene.start('MainMenu'));
+                } else {
+                    this.time.delayedCall(200, () => this.scene.restart({
+                        gridSize: this.gridSize, 
+                        isFreeMode: this.isFreeMode
+                    }));
+                }
+            });
+        }
+
+        createCheckButton() {
+            const {width, height} = this.cameras.main;
+            const w = width * 0.6;
+            const h = 52*this.uiScale;
+            const y = height - h*1.5;
+
+            this.add.rectangle(width/2+3, y+3, w, h, 0x000000, 0.3);
+
+            const btn = this.add.rectangle(width/2, y, w, h, 0x1dd1a1).setInteractive();
+            btn.setStrokeStyle(4*this.uiScale, 0x10ac84);
+
+            this.add.text(width/2, y, 'CHECK ✓', {
+                fontFamily: 'Arial Black',
+                fontSize: `${Math.floor(24*this.uiScale)}px`,
+                color: '#ffffff',
+                stroke: '#000000',
+                strokeThickness: Math.floor(4*this.uiScale)
+            }).setOrigin(0.5);
+
+            btn.on('pointerdown', () => {
+                this.checkSolution();
+                this.tweens.add({targets: btn, y: y+3, duration: 50, yoyo: true});
+            });
+        }
+
+        checkSolution() {
+            let hasEmpty = false;
+            let allValid = true;
+
+            for(let r = 0; r < this.gridSize; r++) {
+                for(let c = 0; c < this.gridSize; c++) {
+                    if(!this.grid[r][c]) hasEmpty = true;
+                }
+            }
+
+            if(hasEmpty) {
+                this.showMessage('Fill all cells!', 0xff6b6b);
+                return;
+            }
+
+            for(let r = 0; r < this.gridSize; r++) {
+                const word = this.grid[r].join('').toLowerCase();
+                if(!VALID_WORDS.has(word)) allValid = false;
+            }
+
+            for(let c = 0; c < this.gridSize; c++) {
+                const word = this.grid.map(r => r[c]).join('').toLowerCase();
+                if(!VALID_WORDS.has(word)) allValid = false;
+            }
+
+            if(allValid) {
+                if(this.isDailyMode) {
+                    markDailyChallengeCompleted(this.todayDate, this.gridSize);
+                }
+                this.showVictory();
+            } else {
+                this.showMessage('Invalid words!', 0xff6b6b);
+            }
+        }
+
+        showMessage(msg, color) {
+            const width = this.cameras.main.width;
+            const text = this.add.text(width/2, 90*this.uiScale, msg, {
+                fontFamily: 'Arial Black',
+                fontSize: `${Math.floor(20*this.uiScale)}px`,
+                color: '#ffffff',
+                backgroundColor: Phaser.Display.Color.IntegerToRGB(color).rgba,
+                padding: {x: 20, y: 10},
+                stroke: '#000000',
+                strokeThickness: Math.floor(3*this.uiScale)
+            }).setOrigin(0.5);
+
+            this.tweens.add({
+                targets: text,
+                alpha: 0,
+                y: text.y - 20,
+                duration: 2000,
+                onComplete: () => text.destroy()
+            });
+        }
+
+        showVictory() {
+            const {width, height} = this.cameras.main;
+
+            for(let i = 0; i < 30; i++) {
+                const x = Phaser.Math.Between(0, width);
+                const y = Phaser.Math.Between(0, height);
+                const star = this.add.text(x, y, '⭐', {fontSize: `${Math.floor(30*this.uiScale)}px`});
+
+                this.tweens.add({
+                    targets: star,
+                    scale: 2,
+                    alpha: 0,
+                    angle: 360,
+                    duration: 1500,
+                    onComplete: () => star.destroy()
+                });
+            }
+
+            this.add.rectangle(width/2, height/2, width, height, 0x000000, 0.7);
+
+            const text = this.add.text(width/2, height/2 - 60*this.uiScale, '🎉 COMPLETE! 🎉', {
+                fontFamily: 'Arial Black',
+                fontSize: `${Math.floor(52*this.uiScale)}px`,
+                color: '#feca57',
+                stroke: '#000000',
+                strokeThickness: Math.floor(8*this.uiScale)
+            }).setOrigin(0.5);
+
+            this.tweens.add({
+                targets: text,
+                scale: 1.2,
+                yoyo: true,
+                repeat: -1,
+                duration: 500
+            });
+
+            // Share button
+            const shareBtn = this.add.rectangle(width/2, height/2 + 60*this.uiScale, 220*this.uiScale, 60*this.uiScale, 0x48DBFB);
+            shareBtn.setStrokeStyle(4*this.uiScale, 0x0ABDE3);
+            shareBtn.setInteractive();
+
+            const shareText = this.add.text(width/2, height/2 + 60*this.uiScale, '📤 SHARE', {
+                fontFamily: 'Arial Black',
+                fontSize: `${Math.floor(24*this.uiScale)}px`,
+                color: '#ffffff',
+                stroke: '#000000',
+                strokeThickness: Math.floor(4*this.uiScale)
+            }).setOrigin(0.5);
+
+            shareBtn.on('pointerdown', () => {
+                this.tweens.add({targets: shareBtn, scaleX: 0.95, scaleY: 0.95, duration: 100, yoyo: true});
+                this.shareGrid();
+            });
+        }
+
+        shareGrid() {
+            const vowels = new Set(['A', 'E', 'I', 'O', 'U']);
+            let shareText = `Grid Complete ${this.gridSize}x${this.gridSize}\n\n`;
+
+            for(let r = 0; r < this.gridSize; r++) {
+                for(let c = 0; c < this.gridSize; c++) {
+                    const letter = this.grid[r][c];
+                    
+                    // Show starting letter
+                    if(this.startingCell && this.startingCell[0] === r && this.startingCell[1] === c) {
+                        shareText += letter + ' ';
+                    }
+                    // Blue square for vowels
+                    else if(vowels.has(letter)) {
+                        shareText += '🟦';
+                    }
+                    // Red square for consonants
+                    else {
+                        shareText += '🟥';
+                    }
+                }
+                shareText += '\n';
+            }
+
+            shareText += '\nCan you solve it? Play Grid Complete!';
+
+            // Try to use native share API if available
+            if(navigator.share) {
+                navigator.share({
+                    title: 'Grid Complete',
+                    text: shareText
+                }).catch(err => {
+                    console.log('Share cancelled or failed:', err);
+                    this.copyToClipboard(shareText);
+                });
+            } else {
+                // Fallback to clipboard
+                this.copyToClipboard(shareText);
+            }
+        }
+
+        copyToClipboard(text) {
+            if(navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(text).then(() => {
+                    this.showMessage('Copied to clipboard! 📋', 0x1dd1a1);
+                }).catch(() => {
+                    this.fallbackCopy(text);
+                });
+            } else {
+                this.fallbackCopy(text);
+            }
+        }
+
+        fallbackCopy(text) {
+            const textArea = document.createElement('textarea');
+            textArea.value = text;
+            textArea.style.position = 'fixed';
+            textArea.style.left = '-999999px';
+            document.body.appendChild(textArea);
+            textArea.select();
+            
+            try {
+                document.execCommand('copy');
+                this.showMessage('Copied to clipboard! 📋', 0x1dd1a1);
+            } catch(err) {
+                this.showMessage('Could not copy. Please share manually.', 0xff6b6b);
+            }
+            
+            document.body.removeChild(textArea);
+        }
+    }
+
+    class MainMenuScene extends Phaser.Scene {
+        constructor() {
+            super('MainMenu');
+        }
+
+        create() {
+            const {width, height} = this.cameras.main;
+            const minDim = Math.min(width, height);
+            const uiScale = minDim / 750;
+
+            drawBricks(this, width, height);
+
+            // Title
+            const title = this.add.text(width/2, height*0.25, 'GRID\nCOMPLETE', {
+                fontSize: `${Math.floor(72*uiScale)}px`,
+                fontFamily: 'Arial Black',
+                color: '#ffffff',
+                align: 'center',
+                stroke: '#2d3561',
+                strokeThickness: Math.floor(10*uiScale)
+            });
+            title.setOrigin(0.5);
+            title.setShadow(5, 5, '#000000', 10);
+
+            this.tweens.add({
+                targets: title,
+                y: height*0.25 - 10,
+                duration: 1000,
+                yoyo: true,
+                repeat: -1,
+                ease: 'Sine.easeInOut'
+            });
+
+            // Classic Mode Button
+            this.createButton(width/2, height*0.45, 'CLASSIC\nMODE', 0xFF6B6B, 0xEE5A6F, () => {
+                this.scene.start('ClassicMode', {gridSize: 5, isDailyMode: false, isFreeMode: false});
+            });
+
+            // Free Mode Button
+            this.createButton(width/2, height*0.6, 'FREE\nMODE', 0x1DD1A1, 0x10ac84, () => {
+                this.scene.start('ClassicMode', {gridSize: 5, isDailyMode: false, isFreeMode: true});
+            });
+
+            // Daily Challenge Button
+            this.createButton(width/2, height*0.75, 'DAILY\nCHALLENGE', 0xFECA57, 0xF97F51, () => {
+                this.scene.start('DailyChallengeMenu');
+            });
+        }
+
+        createButton(x, y, text, color1, color2, callback) {
+            const container = this.add.container(x, y);
+
+            const shadow = this.add.rectangle(8, 8, 280, 100, 0x000000, 0.3).setOrigin(0.5);
+            const bottom = this.add.rectangle(4, 4, 280, 100, color2).setOrigin(0.5);
+            const top = this.add.rectangle(0, 0, 280, 100, color1).setOrigin(0.5);
+
+            const buttonText = this.add.text(0, 0, text, {
+                fontSize: '32px',
+                fontFamily: 'Arial Black',
+                color: '#ffffff',
+                align: 'center',
+                stroke: '#000000',
+                strokeThickness: 6
+            }).setOrigin(0.5);
+
+            container.add([shadow, bottom, top, buttonText]);
+            container.setSize(280, 100);
+            container.setInteractive();
+
+            container.on('pointerover', () => {
+                this.tweens.add({targets: container, scale: 1.05, duration: 100});
+            });
+
+            container.on('pointerout', () => {
+                this.tweens.add({targets: container, scale: 1, duration: 100});
+            });
+
+            container.on('pointerdown', () => {
+                this.tweens.add({targets: [top, buttonText], y: 4, duration: 50});
+                this.cameras.main.flash(200);
+                this.time.delayedCall(200, callback);
+            });
+
+            container.on('pointerup', () => {
+                this.tweens.add({targets: [top, buttonText], y: 0, duration: 50});
+            });
+        }
+    }
+
+    class DailyChallengeMenuScene extends Phaser.Scene {
+        constructor() {
+            super('DailyChallengeMenu');
+        }
+
+        create() {
+            const {width, height} = this.cameras.main;
+            const minDim = Math.min(width, height);
+            const uiScale = minDim / 750;
+            const todayDate = getTodayDate();
+
+            drawBricks(this, width, height);
+
+            // Title
+            this.add.rectangle(width/2, height*0.12, width, height*0.12, 0x2d3561);
+            this.add.text(width/2, height*0.06, 'DAILY CHALLENGE', {
+                fontFamily: 'Arial Black',
+                fontSize: `${Math.floor(32*uiScale)}px`,
+                color: '#ffffff',
+                stroke: '#000000',
+                strokeThickness: Math.floor(6*uiScale)
+            }).setOrigin(0.5);
+
+            this.add.text(width/2, height*0.10, todayDate, {
+                fontFamily: 'Arial',
+                fontSize: `${Math.floor(18*uiScale)}px`,
+                color: '#feca57'
+            }).setOrigin(0.5);
+
+            // Grid size buttons
+            const sizes = [3, 4, 5, 6];
+            const startY = height * 0.25;
+            const spacing = height * 0.15;
+
+            sizes.forEach((size, i) => {
+                const y = startY + i * spacing;
+                const isCompleted = isDailyChallengeCompleted(todayDate, size);
+                const challengeData = getDailyChallengeData(todayDate, size);
+
+                this.createChallengeButton(width/2, y, size, isCompleted, challengeData, uiScale);
+            });
+
+            // Back button
+            this.createBackButton(48*uiScale, 48*uiScale, uiScale);
+        }
+
+        createChallengeButton(x, y, size, isCompleted, challengeData, uiScale) {
+            const container = this.add.container(x, y);
+
+            const bgColor = isCompleted ? 0x1dd1a1 : (challengeData ? 0x48DBFB : 0x64748b);
+            const borderColor = isCompleted ? 0x10ac84 : (challengeData ? 0x0ABDE3 : 0x475569);
+
+            const shadow = this.add.rectangle(6, 6, 320, 80, 0x000000, 0.3).setOrigin(0.5);
+            const bg = this.add.rectangle(0, 0, 320, 80, bgColor).setOrigin(0.5);
+            bg.setStrokeStyle(4*uiScale, borderColor);
+
+            const text = this.add.text(-100, 0, `${size}x${size} GRID`, {
+                fontFamily: 'Arial Black',
+                fontSize: `${Math.floor(24*uiScale)}px`,
+                color: '#ffffff',
+                stroke: '#000000',
+                strokeThickness: Math.floor(4*uiScale)
+            }).setOrigin(0, 0.5);
+
+            const statusText = isCompleted ? '✓ COMPLETED' : (challengeData ? 'PLAY' : 'COMING SOON');
+            const status = this.add.text(100, 0, statusText, {
+                fontFamily: 'Arial Black',
+                fontSize: `${Math.floor(16*uiScale)}px`,
+                color: isCompleted ? '#ffffff' : (challengeData ? '#ffffff' : '#999999'),
+                stroke: '#000000',
+                strokeThickness: Math.floor(3*uiScale)
+            }).setOrigin(1, 0.5);
+
+            container.add([shadow, bg, text, status]);
+            container.setSize(320, 80);
+
+            if(!isCompleted && challengeData) {
+                container.setInteractive();
+
+                container.on('pointerdown', () => {
+                    this.cameras.main.flash(200);
+                    this.time.delayedCall(200, () => {
+                        this.scene.start('ClassicMode', {gridSize: size, isDailyMode: true});
+                    });
+                });
+
+                container.on('pointerover', () => {
+                    this.tweens.add({targets: container, scale: 1.05, duration: 100});
+                });
+
+                container.on('pointerout', () => {
+                    this.tweens.add({targets: container, scale: 1, duration: 100});
+                });
+            }
+        }
+
+        createBackButton(x, y, uiScale) {
+            this.add.rectangle(x+2, y+2, 90, 50, 0x000000, 0.3);
+            const btn = this.add.rectangle(x, y, 90, 50, 0x5f27cd).setInteractive();
+            btn.setStrokeStyle(3*uiScale, 0x341f97);
+
+            this.add.text(x, y, 'BACK', {
+                fontFamily: 'Arial Black',
+                fontSize: `${Math.floor(18*uiScale)}px`,
+                color: '#ffffff',
+                stroke: '#000000',
+                strokeThickness: Math.floor(3*uiScale)
+            }).setOrigin(0.5);
+
+            btn.on('pointerdown', () => {
+                this.cameras.main.flash(200);
+                this.time.delayedCall(200, () => this.scene.start('MainMenu'));
+            });
+        }
+    }
+
+    const config = {
+        type: Phaser.AUTO,
+        width: Math.min(600, window.innerWidth),
+        height: Math.min(800, window.innerHeight),
+        parent: 'game-container',
+        backgroundColor: '#1a1a2e',
+        scene: [MainMenuScene, DailyChallengeMenuScene, ClassicModeScene],
+        scale: {
+            mode: Phaser.Scale.FIT,
+            autoCenter: Phaser.Scale.CENTER_BOTH
+        }
+    };
+
+    new Phaser.Game(config);
+</script>
+```
+
+</body>
+</html>
