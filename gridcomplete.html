@@ -14,9 +14,26 @@
 <body>
     <div id="game-container"></div>
     <script>
-    
         const VALID_WORDS = new Set(['cat','dog','bat','rat','mat','hat','sat','pat','the','and','for','are','but','not','you','all','can','had','her','was','one','our','out','day','get','has','him','his','how','man','new','now','old','see','two','way','who','boy','did','its','let','put','say','she','too','use','word','words','time','very','when','your','come','made','make','star','stars','game','grid','play','letter','cats','ants','tars','care','race','acre','pear','rear','tear','wear','gear','dear','sear','year','bean','lean','mean','wean','bead','lead','read','beat','feat','heat','meat','neat','peat','seat','ten','set','net','wet','bet','pet','met','yet','den','pen','hen','men','bed','red','fed','wed','ted','cab','tab','dab','jab','nab','gab','cad','dad','had','lad','mad','pad','sad','tad','bag','gag','hag','jag','lag','nag','rag','sag','tag','wag']);
         const COLORS = [0xFF6B6B,0xFECA57,0x48DBFB,0x1DD1A1,0xEE5A6F,0xC44569,0xF97F51,0x5F27CD,0x00D2D3,0x54A0FF];
+
+    let VALID_WORDS = new Set();
+    let WORDS_LOADED = false;
+
+    // Load words from your GitHub repo
+    fetch('https://raw.githubusercontent.com/Sublime-Audio-Productions/public-policies/main/assets/words.json')
+        .then(response => response.json())
+        .then(data => {
+            VALID_WORDS = new Set(data);
+            WORDS_LOADED = true;
+            console.log(`Loaded ${VALID_WORDS.size} words`);
+        })
+        .catch(error => {
+            console.error('Error loading words:', error);
+            // Fallback to basic words if loading fails
+            VALID_WORDS = new Set(['cat','dog','bat','rat','mat','hat','sat','pat','the','and','for','are','but','not','you','all','can','had','her','was','one','our','out','day','get','has','him','his','how','man','new','now','old','see','two','way','who','boy','did','its','let','put','say','she','too','use','bed','red','fed','wed','ted','ten','set','net','wet','bet','pet','met','yet','den','pen','hen','men']);
+            WORDS_LOADED = true;
+        });
 
     // Daily challenges - in production, this would be loaded from a JSON file
     const DAILY_CHALLENGES = {
@@ -100,6 +117,17 @@
         }
 
         create() {
+            // Wait for words to load
+            if(!WORDS_LOADED) {
+                this.add.text(this.cameras.main.width/2, this.cameras.main.height/2, 'Loading words...', {
+                    fontSize: '24px',
+                    color: '#ffffff'
+                }).setOrigin(0.5);
+                
+                this.time.delayedCall(100, () => this.create());
+                return;
+            }
+
             const {width, height} = this.cameras.main;
             const minDim = Math.min(width, height);
             this.uiScale = minDim / 750;
@@ -129,10 +157,21 @@
                 this.createGridSizeSelector(width/2, titleHeight*0.75);
             }
 
-            const gridAreaHeight = height * 0.42;
-            this.cellSize = Math.floor(Math.min(gridAreaHeight/this.gridSize, width*0.85/this.gridSize));
-            this.startX = (width - this.cellSize*this.gridSize)/2;
-            this.startY = titleHeight + height*0.02;
+            // Calculate layout - keyboard at bottom, grid in center
+            const keyboardHeight = height * 0.25;
+            const checkButtonHeight = 60 * this.uiScale;
+            const availableGridHeight = height - titleHeight - keyboardHeight - checkButtonHeight - (height * 0.08);
+            
+            this.cellSize = Math.floor(
+                Math.min(availableGridHeight / this.gridSize, width * 0.85 / this.gridSize)
+            );
+
+            this.startX = (width - this.cellSize * this.gridSize) / 2;
+            // Center the grid vertically in available space
+            const topSpace = titleHeight + height * 0.04;
+            const gridHeight = this.cellSize * this.gridSize;
+            const bottomSpace = height - keyboardHeight - checkButtonHeight - height * 0.04;
+            this.startY = topSpace + (bottomSpace - topSpace - gridHeight) / 2;
 
             this.generateValidGrid();
             
@@ -145,9 +184,10 @@
             }
             
             this.createGrid();
-            this.createKeyboard();
             this.createBackButton();
+            this.createMenuButton();
             this.createCheckButton();
+            this.createKeyboard();
         }
 
         createGridSizeSelector(x, y) {
@@ -479,7 +519,7 @@
             const btn = this.add.rectangle(x, y, size*2, size, 0x5f27cd).setInteractive();
             btn.setStrokeStyle(3*this.uiScale, 0x341f97);
 
-            const buttonText = this.isDailyMode ? 'MENU' : 'RESET';
+            const buttonText = this.isDailyMode ? 'BACK' : 'RESET';
             this.add.text(x, y, buttonText, {
                 fontFamily: 'Arial Black',
                 fontSize: `${Math.floor(16*this.uiScale)}px`,
@@ -491,7 +531,7 @@
             btn.on('pointerdown', () => {
                 this.cameras.main.flash(200);
                 if(this.isDailyMode) {
-                    this.time.delayedCall(200, () => this.scene.start('MainMenu'));
+                    this.time.delayedCall(200, () => this.scene.start('DailyChallengeMenu'));
                 } else {
                     this.time.delayedCall(200, () => this.scene.restart({
                         gridSize: this.gridSize, 
@@ -501,28 +541,61 @@
             });
         }
 
-        createCheckButton() {
-            const {width, height} = this.cameras.main;
-            const w = width * 0.6;
-            const h = 52*this.uiScale;
-            const y = height - h*1.5;
+        createMenuButton() {
+            const {width} = this.cameras.main;
+            const size = 48*this.uiScale;
+            const x = width - size;
+            const y = size;
 
-            this.add.rectangle(width/2+3, y+3, w, h, 0x000000, 0.3);
+            this.add.rectangle(x+2, y+2, size*2, size, 0x000000, 0.3);
 
-            const btn = this.add.rectangle(width/2, y, w, h, 0x1dd1a1).setInteractive();
-            btn.setStrokeStyle(4*this.uiScale, 0x10ac84);
+            const btn = this.add.rectangle(x, y, size*2, size, 0xF97F51).setInteractive();
+            btn.setStrokeStyle(3*this.uiScale, 0xC44569);
 
-            this.add.text(width/2, y, 'CHECK ✓', {
+            this.add.text(x, y, 'MENU', {
                 fontFamily: 'Arial Black',
-                fontSize: `${Math.floor(24*this.uiScale)}px`,
+                fontSize: `${Math.floor(16*this.uiScale)}px`,
                 color: '#ffffff',
                 stroke: '#000000',
-                strokeThickness: Math.floor(4*this.uiScale)
+                strokeThickness: Math.floor(3*this.uiScale)
+            }).setOrigin(0.5);
+
+            btn.on('pointerdown', () => {
+                this.cameras.main.flash(200);
+                this.time.delayedCall(200, () => this.scene.start('MainMenu'));
+            });
+        }
+
+        createCheckButton() {
+            const {width, height} = this.cameras.main;
+            
+            // Position check button above keyboard
+            const keyboardBottomMargin = height * 0.02;
+            const keySize = Math.floor(Math.min(this.cellSize * 0.5, width * 0.95 / 11));
+            const spacing = keySize * 1.1;
+            const totalKeyboardHeight = 3 * spacing * 0.95 + spacing;
+            const keyboardTop = height - keyboardBottomMargin - totalKeyboardHeight;
+            
+            const buttonWidth = width * 0.6;
+            const buttonHeight = 52 * this.uiScale;
+            const buttonY = keyboardTop - buttonHeight / 2 - height * 0.02;
+
+            this.add.rectangle(width / 2 + 3, buttonY + 3, buttonWidth, buttonHeight, 0x000000, 0.3);
+
+            const btn = this.add.rectangle(width / 2, buttonY, buttonWidth, buttonHeight, 0x1dd1a1).setInteractive();
+            btn.setStrokeStyle(4 * this.uiScale, 0x10ac84);
+
+            this.add.text(width / 2, buttonY, 'CHECK ✓', {
+                fontFamily: 'Arial Black',
+                fontSize: `${Math.floor(24 * this.uiScale)}px`,
+                color: '#ffffff',
+                stroke: '#000000',
+                strokeThickness: Math.floor(4 * this.uiScale)
             }).setOrigin(0.5);
 
             btn.on('pointerdown', () => {
                 this.checkSolution();
-                this.tweens.add({targets: btn, y: y+3, duration: 50, yoyo: true});
+                this.tweens.add({targets: btn, y: buttonY + 3, duration: 50, yoyo: true});
             });
         }
 
@@ -562,23 +635,39 @@
         }
 
         showMessage(msg, color) {
-            const width = this.cameras.main.width;
-            const text = this.add.text(width/2, 90*this.uiScale, msg, {
+            const {width, height} = this.cameras.main;
+            
+            // Create semi-transparent overlay
+            const overlay = this.add.rectangle(width / 2, height / 2, width, height, 0x000000, 0.7);
+            
+            // Create message background
+            const msgWidth = width * 0.8;
+            const msgHeight = 120 * this.uiScale;
+            
+            const msgBg = this.add.rectangle(width / 2, height / 2, msgWidth, msgHeight, color);
+            msgBg.setStrokeStyle(4 * this.uiScale, 0x000000);
+            
+            const text = this.add.text(width / 2, height / 2, msg, {
                 fontFamily: 'Arial Black',
-                fontSize: `${Math.floor(20*this.uiScale)}px`,
+                fontSize: `${Math.floor(24 * this.uiScale)}px`,
                 color: '#ffffff',
-                backgroundColor: Phaser.Display.Color.IntegerToRGB(color).rgba,
-                padding: {x: 20, y: 10},
                 stroke: '#000000',
-                strokeThickness: Math.floor(3*this.uiScale)
+                strokeThickness: Math.floor(4 * this.uiScale),
+                align: 'center',
+                wordWrap: { width: msgWidth - 40 }
             }).setOrigin(0.5);
 
+            // Fade out animation
             this.tweens.add({
-                targets: text,
+                targets: [overlay, msgBg, text],
                 alpha: 0,
-                y: text.y - 20,
                 duration: 2000,
-                onComplete: () => text.destroy()
+                delay: 1000,
+                onComplete: () => {
+                    overlay.destroy();
+                    msgBg.destroy();
+                    text.destroy();
+                }
             });
         }
 
@@ -929,5 +1018,6 @@
 
     new Phaser.Game(config);
 </script>
+
 </body>
 </html>
