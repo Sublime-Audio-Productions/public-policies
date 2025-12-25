@@ -28,7 +28,8 @@
         })
         .catch(error => {
             console.error('Error loading words:', error);
-            alert('Failed to load words')
+            alert('Failed to load words: ')
+            alert(error)
             // Fallback to basic words if loading fails
             VALID_WORDS = new Set(['cat','dog','bat','rat','mat','hat','sat','pat','the','and','for','are','but','not','you','all','can','had','her','was','one','our','out','day','get','has','him','his','how','man','new','now','old','see','two','way','who','boy','did','its','let','put','say','she','too','use','bed','red','fed','wed','ted','ten','set','net','wet','bet','pet','met','yet','den','pen','hen','men']);
             WORDS_LOADED = true;
