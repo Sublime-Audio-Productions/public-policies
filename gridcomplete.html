@@ -20,7 +20,7 @@
 
   async function loadWords() {
   try {
-    const response = await fetch('/assets/words.json'); // ← LOCAL FILE
+    const response = await fetch('https://www.sublime-audio-productions.com/assets/words.json'); // ← LOCAL FILE
 
     if (!response.ok) {
       throw new Error(`HTTP ${response.status} - ${response.statusText}`);
