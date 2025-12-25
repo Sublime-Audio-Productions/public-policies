@@ -19,7 +19,7 @@
     let WORDS_LOADED = false;
 
     // Load words from your GitHub repo
-    fetch('https://raw.githubusercontent.com/Sublime-Audio-Productions/public-policies/main/assets/words.json')
+    fetch('./assets/words.json')
         .then(response => response.json())
         .then(data => {
             VALID_WORDS = new Set(data);
