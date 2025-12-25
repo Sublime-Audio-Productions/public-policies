@@ -16,7 +16,6 @@
     <script>
         let VALID_WORDS = new Set();
         const COLORS = [0xFF6B6B,0xFECA57,0x48DBFB,0x1DD1A1,0xEE5A6F,0xC44569,0xF97F51,0x5F27CD,0x00D2D3,0x54A0FF];
-
     let WORDS_LOADED = false;
 
     // Load words from your GitHub repo
@@ -419,7 +418,7 @@
             const spacing = keySize * 1.1;
 
             const rows = [10, 9, 7];
-            const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
+            const letters = 'QWERTYUIOPASDFGHJKLZXCVBNM'.split('');
 
             let index = 0;
 
@@ -587,20 +586,13 @@
         createCheckButton() {
             const {width, height} = this.cameras.main;
             
-            // Calculate keyboard position to place button right above it
-            const keySize = Math.floor(Math.min(this.cellSize * 0.5, width * 0.98 / 11));
-            const verticalSpacing = keySize * 1.02;
-            const deleteKeyHeight = keySize;
-            const bottomPadding = 5;
-            
-            // Calculate where keyboard actually starts
-            const deleteKeyY = height - deleteKeyHeight / 2 - bottomPadding;
-            const topOfKeyboard = deleteKeyY - deleteKeyHeight / 2 - verticalSpacing / 2 - (3 * verticalSpacing) - keySize / 2;
+            // Position check button above keyboard (keyboard starts at height - 90 - 70)
+            const keyboardStartY = height - 90 - 70;
             
             const buttonWidth = width * 0.7;
             const buttonHeight = 55 * this.uiScale;
-            const gap = 12 * this.uiScale;
-            const buttonY = topOfKeyboard - gap - buttonHeight / 2;
+            const gap = 15 * this.uiScale;
+            const buttonY = keyboardStartY - gap - buttonHeight / 2;
 
             this.add.rectangle(width / 2 + 3, buttonY + 3, buttonWidth, buttonHeight, 0x000000, 0.3);
 
@@ -631,39 +623,50 @@
         }
 
         checkSolution() {
-            let hasEmpty = false;
-            let allValid = true;
+    let hasEmpty = false;
+    const invalidWords = [];
 
-            for(let r = 0; r < this.gridSize; r++) {
-                for(let c = 0; c < this.gridSize; c++) {
-                    if(!this.grid[r][c]) hasEmpty = true;
-                }
-            }
-
-            if(hasEmpty) {
-                this.showMessage('Fill all cells!', 0xff6b6b);
-                return;
-            }
-
-            for(let r = 0; r < this.gridSize; r++) {
-                const word = this.grid[r].join('').toLowerCase();
-                if(!VALID_WORDS.has(word)) allValid = false;
-            }
-
-            for(let c = 0; c < this.gridSize; c++) {
-                const word = this.grid.map(r => r[c]).join('').toLowerCase();
-                if(!VALID_WORDS.has(word)) allValid = false;
-            }
-
-            if(allValid) {
-                if(this.isDailyMode) {
-                    markDailyChallengeCompleted(this.todayDate, this.gridSize);
-                }
-                this.showVictory();
-            } else {
-                this.showMessage('Invalid words!', 0xff6b6b);
-            }
+    // Check for empty cells
+    for(let r = 0; r < this.gridSize; r++) {
+        for(let c = 0; c < this.gridSize; c++) {
+            if(!this.grid[r][c]) hasEmpty = true;
         }
+    }
+
+    if(hasEmpty) {
+        this.showMessage('Fill all cells!', 0xff6b6b);
+        return [];
+    }
+
+    // Check rows for invalid words
+    for(let r = 0; r < this.gridSize; r++) {
+        const word = this.grid[r].join('').toLowerCase();
+        if(!VALID_WORDS.has(word)) {
+            invalidWords.push(word);
+        }
+    }
+
+    // Check columns for invalid words
+    for(let c = 0; c < this.gridSize; c++) {
+        const word = this.grid.map(r => r[c]).join('').toLowerCase();
+        if(!VALID_WORDS.has(word)) {
+            invalidWords.push(word);
+        }
+    }
+
+    // If no invalid words, user wins
+    if(invalidWords.length === 0) {
+        if(this.isDailyMode) {
+            markDailyChallengeCompleted(this.todayDate, this.gridSize);
+        }
+        this.showVictory();
+        return [];
+    }
+
+    // Otherwise, show invalid words message and return them
+    this.showMessage(`Invalid words: ${invalidWords.join(', ')}`, 0xff6b6b);
+    return invalidWords;
+}
 
         showMessage(msg, color) {
             const {width, height} = this.cameras.main;
@@ -671,16 +674,16 @@
             // Create semi-transparent overlay
             const overlay = this.add.rectangle(width / 2, height / 2, width, height, 0x000000, 0.7);
             
-            // Create message background
-            const msgWidth = width * 0.8;
-            const msgHeight = 120 * this.uiScale;
+            // Create message background - make it taller for multiple lines
+            const msgWidth = width * 0.85;
+            const msgHeight = Math.max(150 * this.uiScale, 200 * this.uiScale);
             
             const msgBg = this.add.rectangle(width / 2, height / 2, msgWidth, msgHeight, color);
             msgBg.setStrokeStyle(4 * this.uiScale, 0x000000);
             
             const text = this.add.text(width / 2, height / 2, msg, {
                 fontFamily: 'Arial Black',
-                fontSize: `${Math.floor(24 * this.uiScale)}px`,
+                fontSize: `${Math.floor(18 * this.uiScale)}px`,
                 color: '#ffffff',
                 stroke: '#000000',
                 strokeThickness: Math.floor(4 * this.uiScale),
@@ -693,7 +696,7 @@
                 targets: [overlay, msgBg, text],
                 alpha: 0,
                 duration: 2000,
-                delay: 1000,
+                delay: 2000,
                 onComplete: () => {
                     overlay.destroy();
                     msgBg.destroy();
