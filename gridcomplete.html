@@ -16,40 +16,39 @@
     <script>
         let VALID_WORDS = new Set();
         const COLORS = [0xFF6B6B,0xFECA57,0x48DBFB,0x1DD1A1,0xEE5A6F,0xC44569,0xF97F51,0x5F27CD,0x00D2D3,0x54A0FF];
+
     let WORDS_LOADED = false;
 
-  async function loadWords() {
-  try {
-    const urls = [
-      'https://raw.githubusercontent.com/jonathanwelton/word-lists/main/3-letter-words.json',
-      'https://raw.githubusercontent.com/jonathanwelton/word-lists/main/4-letter-words.json',
-      'https://raw.githubusercontent.com/jonathanwelton/word-lists/main/5-letter-words.json',
-    ];
+    async function loadWords() {
+        try {
+            const urls = [
+                'https://raw.githubusercontent.com/jonathanwelton/word-lists/main/3-letter-words.json',
+                'https://raw.githubusercontent.com/jonathanwelton/word-lists/main/4-letter-words.json',
+                'https://raw.githubusercontent.com/jonathanwelton/word-lists/main/5-letter-words.json',
+            ];
 
-    const responses = await Promise.all(urls.map(url => fetch(url)));
+            const responses = await Promise.all(urls.map(url => fetch(url)));
 
-    const dataArrays = await Promise.all(responses.map(res => {
-      if (!res.ok) throw new Error(`Failed to fetch ${res.url}: ${res.status}`);
-      return res.json();
-    }));
+            const dataArrays = await Promise.all(responses.map(res => {
+                if (!res.ok) throw new Error(`Failed to fetch ${res.url}: ${res.status}`);
+                return res.json();
+            }));
 
-    // merge all words
-    const allWords = dataArrays.flat();
-    VALID_WORDS = new Set(allWords);
-    WORDS_LOADED = true;
-    console.log(`Loaded ${VALID_WORDS.size} words (3–5 letters)`);
+            const allWords = dataArrays.flat();
+            VALID_WORDS = new Set(allWords);
+            WORDS_LOADED = true;
+            console.log(`Loaded ${VALID_WORDS.size} words (3–5 letters)`);
 
-  } catch (error) {
-    console.error('Error loading words:', error);
-    alert(`Failed to load dictionary: ${error.message}`);
-    // fallback...
-    VALID_WORDS = new Set(['cat','dog','bat','rat']);
-    WORDS_LOADED = true;
-  }
-}
+        } catch (error) {
+            console.error('Error loading words:', error);
+            alert(`Failed to load dictionary: ${error.message}`);
+            VALID_WORDS = new Set(['cat','dog','bat','rat']);
+            WORDS_LOADED = true;
+        }
+    }
 
-loadWords();
-  
+    loadWords();
+
     // Daily challenges - in production, this would be loaded from a JSON file
     const DAILY_CHALLENGES = {
         "2025-01-15": {
@@ -428,14 +427,14 @@ loadWords();
 
         createKeyboard() {
             const {width, height} = this.cameras.main;
-            const startY = this.startY + this.gridSize*this.cellSize + height*0.03;
+            const startY = height - this.gridSize*this.cellSize*0.35;
 
             const maxKeyboardWidth = width * 0.95;
             const keySize = Math.floor(Math.min(this.cellSize*0.6, maxKeyboardWidth/11));
             const spacing = keySize * 1.1;
 
             const rows = [10, 9, 7];
-            const letters = 'QWERTYUIOPASDFGHJKLZXCVBNM'.split('');
+            const letters = 'Q W E R T Y U I O PA S D F G H J K L Z X C V B N M'.split(' ');
 
             let index = 0;
 
@@ -603,13 +602,20 @@ loadWords();
         createCheckButton() {
             const {width, height} = this.cameras.main;
             
-            // Position check button above keyboard (keyboard starts at height - 90 - 70)
-            const keyboardStartY = height - 90 - 70;
+            // Calculate keyboard position to place button right above it
+            const keySize = Math.floor(Math.min(this.cellSize * 0.5, width * 0.98 / 11));
+            const verticalSpacing = keySize * 1.02;
+            const deleteKeyHeight = keySize;
+            const bottomPadding = 5;
+            
+            // Calculate where keyboard actually starts
+            const deleteKeyY = height - deleteKeyHeight / 2 - bottomPadding;
+            const topOfKeyboard = deleteKeyY - deleteKeyHeight / 2 - verticalSpacing / 2 - (3 * verticalSpacing) - keySize / 2;
             
             const buttonWidth = width * 0.7;
             const buttonHeight = 55 * this.uiScale;
-            const gap = 15 * this.uiScale;
-            const buttonY = keyboardStartY - gap - buttonHeight / 2;
+            const gap = 12 * this.uiScale;
+            const buttonY = topOfKeyboard - gap - buttonHeight / 2;
 
             this.add.rectangle(width / 2 + 3, buttonY + 3, buttonWidth, buttonHeight, 0x000000, 0.3);
 
@@ -640,50 +646,39 @@ loadWords();
         }
 
         checkSolution() {
-    let hasEmpty = false;
-    const invalidWords = [];
+            let hasEmpty = false;
+            let allValid = true;
 
-    // Check for empty cells
-    for(let r = 0; r < this.gridSize; r++) {
-        for(let c = 0; c < this.gridSize; c++) {
-            if(!this.grid[r][c]) hasEmpty = true;
+            for(let r = 0; r < this.gridSize; r++) {
+                for(let c = 0; c < this.gridSize; c++) {
+                    if(!this.grid[r][c]) hasEmpty = true;
+                }
+            }
+
+            if(hasEmpty) {
+                this.showMessage('Fill all cells!', 0xff6b6b);
+                return;
+            }
+
+            for(let r = 0; r < this.gridSize; r++) {
+                const word = this.grid[r].join('').toLowerCase();
+                if(!VALID_WORDS.has(word)) allValid = false;
+            }
+
+            for(let c = 0; c < this.gridSize; c++) {
+                const word = this.grid.map(r => r[c]).join('').toLowerCase();
+                if(!VALID_WORDS.has(word)) allValid = false;
+            }
+
+            if(allValid) {
+                if(this.isDailyMode) {
+                    markDailyChallengeCompleted(this.todayDate, this.gridSize);
+                }
+                this.showVictory();
+            } else {
+                this.showMessage('Invalid words!', 0xff6b6b);
+            }
         }
-    }
-
-    if(hasEmpty) {
-        this.showMessage('Fill all cells!', 0xff6b6b);
-        return [];
-    }
-
-    // Check rows for invalid words
-    for(let r = 0; r < this.gridSize; r++) {
-        const word = this.grid[r].join('').toLowerCase();
-        if(!VALID_WORDS.has(word)) {
-            invalidWords.push(word);
-        }
-    }
-
-    // Check columns for invalid words
-    for(let c = 0; c < this.gridSize; c++) {
-        const word = this.grid.map(r => r[c]).join('').toLowerCase();
-        if(!VALID_WORDS.has(word)) {
-            invalidWords.push(word);
-        }
-    }
-
-    // If no invalid words, user wins
-    if(invalidWords.length === 0) {
-        if(this.isDailyMode) {
-            markDailyChallengeCompleted(this.todayDate, this.gridSize);
-        }
-        this.showVictory();
-        return [];
-    }
-
-    // Otherwise, show invalid words message and return them
-    this.showMessage(`Invalid words: ${invalidWords.join('\n')}`, 0xff6b6b);
-    return invalidWords;
-}
 
         showMessage(msg, color) {
             const {width, height} = this.cameras.main;
@@ -691,16 +686,16 @@ loadWords();
             // Create semi-transparent overlay
             const overlay = this.add.rectangle(width / 2, height / 2, width, height, 0x000000, 0.7);
             
-            // Create message background - make it taller for multiple lines
-            const msgWidth = width * 0.85;
-            const msgHeight = Math.max(150 * this.uiScale, 200 * this.uiScale);
+            // Create message background
+            const msgWidth = width * 0.8;
+            const msgHeight = 120 * this.uiScale;
             
             const msgBg = this.add.rectangle(width / 2, height / 2, msgWidth, msgHeight, color);
             msgBg.setStrokeStyle(4 * this.uiScale, 0x000000);
             
             const text = this.add.text(width / 2, height / 2, msg, {
                 fontFamily: 'Arial Black',
-                fontSize: `${Math.floor(36 * this.uiScale)}px`,
+                fontSize: `${Math.floor(24 * this.uiScale)}px`,
                 color: '#ffffff',
                 stroke: '#000000',
                 strokeThickness: Math.floor(4 * this.uiScale),
@@ -713,7 +708,7 @@ loadWords();
                 targets: [overlay, msgBg, text],
                 alpha: 0,
                 duration: 2000,
-                delay: 2000,
+                delay: 1000,
                 onComplete: () => {
                     overlay.destroy();
                     msgBg.destroy();
@@ -862,7 +857,7 @@ loadWords();
             drawBricks(this, width, height);
 
             // Title
-            const title = this.add.text(width/2, height*0.25, 'GRID\nCOMPLETE', {
+            const title = this.add.text(width/2, height*0.05, 'GRID\nCOMPLETE', {
                 fontSize: `${Math.floor(72*uiScale)}px`,
                 fontFamily: 'Arial Black',
                 color: '#ffffff',
@@ -883,20 +878,23 @@ loadWords();
             });
 
             // Classic Mode Button
-            this.createButton(width/2, height*0.45, 'CLASSIC\nMODE', 0xFF6B6B, 0xEE5A6F, () => {
+            this.createButton(width/2, height*0.25, 'CLASSIC\nMODE', 0xFF6B6B, 0xEE5A6F, () => {
                 this.scene.start('ClassicMode', {gridSize: 5, isDailyMode: false, isFreeMode: false});
             });
 
             // Free Mode Button
-            this.createButton(width/2, height*0.6, 'FREE\nMODE', 0x1DD1A1, 0x10ac84, () => {
+            this.createButton(width/2, height*0.45, 'FREE\nMODE', 0x1DD1A1, 0x10ac84, () => {
                 this.scene.start('ClassicMode', {gridSize: 5, isDailyMode: false, isFreeMode: true});
             });
 
             // Daily Challenge Button
-            this.createButton(width/2, height*0.75, 'DAILY\nCHALLENGE', 0xFECA57, 0xF97F51, () => {
+            this.createButton(width/2, height*0.6, 'DAILY\nCHALLENGE', 0xFECA57, 0xF97F51, () => {
                 this.scene.start('DailyChallengeMenu');
             });
-            
+
+            this.createButton(width/2, height*0.75, 'PUZZLE\nMODE', 0xFECA57, 0xF97F51, () => {
+                this.scene.start('PuzzleMode');
+            }); 
         }
 
         createButton(x, y, text, color1, color2, callback) {
@@ -1055,13 +1053,132 @@ loadWords();
         }
     }
 
+    class PuzzleModeScene extends Phaser.Scene {
+            constructor() { super('PuzzleMode'); }
+            
+            create() {
+                const w = this.cameras.main.width, h = this.cameras.main.height;
+                this.drawBricks(w, h);
+                
+                this.gridSize = 4;
+                this.genPuzzle();
+                
+                this.add.rectangle(w/2, 50, w, 80, 0x2d3561);
+                this.add.text(w/2, 50, 'PUZZLE MODE', {fontSize:'32px', fontFamily:'Arial Black', color:'#fff', stroke:'#000', strokeThickness:6}).setOrigin(0.5);
+                
+                this.cellSize = Math.min(80, (w-100)/4);
+                this.startX = (w-this.cellSize*4)/2;
+                this.startY = 140;
+                
+                this.cells=[]; this.cellTexts=[]; this.cellContainers=[];
+                for(let r=0; r<4; r++) {
+                    this.cells[r]=[]; this.cellTexts[r]=[]; this.cellContainers[r]=[];
+                    for(let c=0; c<4; c++) {
+                        const x = this.startX+c*this.cellSize, y = this.startY+r*this.cellSize;
+                        const con = this.add.container(x, y);
+                        const col = COLORS[(r*4+c)%10];
+                        const sh = this.add.rectangle(4, 4, this.cellSize-8, this.cellSize-8, 0x000000, 0.3).setOrigin(0);
+                        const cell = this.add.rectangle(0, 0, this.cellSize-8, this.cellSize-8, col).setOrigin(0).setStrokeStyle(4, 0x1a1a2e);
+                        const txt = this.add.text((this.cellSize-8)/2, (this.cellSize-8)/2, this.grid[r][c], {fontSize:'36px', fontFamily:'Arial Black', color:'#fff', stroke:'#000', strokeThickness:5}).setOrigin(0.5);
+                        con.add([sh,cell,txt]).setSize(this.cellSize-8, this.cellSize-8).setInteractive();
+                        this.input.setDraggable(con);
+                        con.row=r; con.col=c;
+                        this.cells[r][c]=cell; this.cellTexts[r][c]=txt; this.cellContainers[r][c]=con;
+                    }
+                }
+                
+                this.input.on('dragstart', (p,o) => { o.setDepth(100); this.tweens.add({targets:o, scale:1.1, duration:100}); });
+                this.input.on('drag', (p,o,dx,dy) => { o.x=dx; o.y=dy; });
+                this.input.on('dragend', (p,o) => {
+                    const dr=Math.floor((p.y-this.startY)/this.cellSize), dc=Math.floor((p.x-this.startX)/this.cellSize);
+                    if(dr>=0 && dr<4 && dc>=0 && dc<4) this.swapCells(o.row, o.col, dr, dc);
+                    const fx=this.startX+o.col*this.cellSize, fy=this.startY+o.row*this.cellSize;
+                    this.tweens.add({targets:o, x:fx, y:fy, scale:1, duration:200, ease:'Back.easeOut'});
+                    o.setDepth(0);
+                });
+                
+                this.makeBackBtn(30, 50, () => this.scene.start('MainMenu'));
+                this.makeCheckBtn(w/2, h-70, () => this.checkSolution());
+            }
+            
+            drawBricks(w, h) {
+                const g = this.add.graphics();
+                for(let y=0; y<h; y+=40) for(let x=0; x<w; x+=80) {
+                    const off = (y/40)%2===0 ? 0 : 40;
+                    g.fillStyle(0x1e3a5f, 1); g.fillRect(x+off, y, 76, 36);
+                    g.lineStyle(2, 0x2d5a8f); g.strokeRect(x+off, y, 76, 36);
+                }
+            }
+            
+            genPuzzle() {
+                const words = ['CATS','ANTS','TARS','STAR'];
+                this.solution = words.map(w => w.split(''));
+                this.grid = JSON.parse(JSON.stringify(this.solution));
+                const letters = [];
+                for(let r=0; r<4; r++) for(let c=0; c<4; c++) letters.push(this.grid[r][c]);
+                for(let i=15; i>0; i--) { const j=Math.floor(Math.random()*(i+1)); [letters[i],letters[j]]=[letters[j],letters[i]]; }
+                let idx=0;
+                for(let r=0; r<4; r++) for(let c=0; c<4; c++) this.grid[r][c]=letters[idx++];
+            }
+            
+            swapCells(r1,c1,r2,c2) {
+                if(r1===r2 && c1===c2) return;
+                [this.grid[r1][c1], this.grid[r2][c2]] = [this.grid[r2][c2], this.grid[r1][c1]];
+                [this.cellContainers[r1][c1].row, this.cellContainers[r2][c2].row] = [this.cellContainers[r2][c2].row, this.cellContainers[r1][c1].row];
+                [this.cellContainers[r1][c1].col, this.cellContainers[r2][c2].col] = [this.cellContainers[r2][c2].col, this.cellContainers[r1][c1].col];
+                [this.cellContainers[r1][c1], this.cellContainers[r2][c2]] = [this.cellContainers[r2][c2], this.cellContainers[r1][c1]];
+                const tx=this.startX+c1*this.cellSize, ty=this.startY+r1*this.cellSize;
+                this.tweens.add({targets:this.cellContainers[r1][c1], x:tx, y:ty, duration:200, ease:'Back.easeOut'});
+            }
+            
+            makeBackBtn(x, y, fn) {
+                this.add.rectangle(x+2, y+2, 90, 40, 0x000000, 0.3);
+                const b = this.add.rectangle(x, y, 90, 40, 0x5F27CD).setStrokeStyle(3, 0x341f97).setInteractive();
+                this.add.text(x, y, 'BACK', {fontSize:'18px', fontFamily:'Arial Black', color:'#fff', stroke:'#000', strokeThickness:3}).setOrigin(0.5);
+                b.on('pointerdown', () => { this.cameras.main.flash(200); this.time.delayedCall(200, fn); });
+            }
+            
+            makeCheckBtn(x, y, fn) {
+                this.add.rectangle(x+3, y+3, 220, 50, 0x000000, 0.3);
+                const b = this.add.rectangle(x, y, 220, 50, 0x1DD1A1).setStrokeStyle(4, 0x10ac84).setInteractive();
+                const t = this.add.text(x, y, 'CHECK ✓', {fontSize:'24px', fontFamily:'Arial Black', color:'#fff', stroke:'#000', strokeThickness:4}).setOrigin(0.5);
+                b.on('pointerdown', () => { this.tweens.add({targets:[b,t], y:y+3, duration:50, yoyo:true}); fn(); });
+            }
+            
+            checkSolution() {
+                let valid = true;
+                for(let r=0; r<4; r++) if(!VALID_WORDS.has(this.grid[r].join('').toLowerCase())) valid=false;
+                for(let c=0; c<4; c++) if(!VALID_WORDS.has(this.grid.map(r=>r[c]).join('').toLowerCase())) valid=false;
+                valid ? this.showVictory() : this.showError();
+            }
+            
+            showVictory() {
+                const w = this.cameras.main.width, h = this.cameras.main.height;
+                for(let i=0; i<40; i++) {
+                    const emj = ['⭐','🎉','✨','🌟'][Phaser.Math.Between(0,3)];
+                    const s = this.add.text(Phaser.Math.Between(0,w), Phaser.Math.Between(0,h), emj, {fontSize:'30px'});
+                    this.tweens.add({targets:s, scale:2, alpha:0, angle:360, duration:1500, onComplete:()=>s.destroy()});
+                }
+                this.add.rectangle(w/2, h/2, w, h, 0x000000, 0.7);
+                const t = this.add.text(w/2, h/2, '🎉 SOLVED! 🎉', {fontSize:'56px', fontFamily:'Arial Black', color:'#48DBFB', stroke:'#000', strokeThickness:8}).setOrigin(0.5);
+                this.tweens.add({targets:t, scale:1.2, duration:500, yoyo:true, repeat:-1});
+            }
+            
+            showError() {
+                const w = this.cameras.main.width;
+                const bg = this.add.rectangle(w/2, 90, 300, 50, 0xFF6B6B).setStrokeStyle(3, 0xEE5A6F);
+                const t = this.add.text(w/2, 90, 'Keep trying!', {fontSize:'24px', fontFamily:'Arial Black', color:'#fff', stroke:'#000', strokeThickness:4}).setOrigin(0.5);
+                this.tweens.add({targets:[bg,t], alpha:0, y:70, duration:2000, onComplete:()=>{ bg.destroy(); t.destroy(); }});
+            }
+        }
+
     const config = {
         type: Phaser.AUTO,
         width: Math.min(600, window.innerWidth),
-        height: Math.min(1920, window.innerHeight),
+        height: Math.min(1280, window.innerHeight),
         parent: 'game-container',
         backgroundColor: '#1a1a2e',
-        scene: [MainMenuScene, DailyChallengeMenuScene, ClassicModeScene],
+        scene: [MainMenuScene, DailyChallengeMenuScene, ClassicModeScene, PuzzleModeScene],
         scale: {
             mode: Phaser.Scale.FIT,
             autoCenter: Phaser.Scale.CENTER_BOTH
