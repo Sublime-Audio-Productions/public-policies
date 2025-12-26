@@ -1056,6 +1056,10 @@
     class PuzzleModeScene extends Phaser.Scene {
             constructor() { super('PuzzleMode'); }
             
+            init(data) {
+                this.gridSize = data.gridSize || 5; // default 5 if not passed
+            }
+
             create() {
                 const w = this.cameras.main.width, h = this.cameras.main.height;
                 this.drawBricks(w, h);
@@ -1065,7 +1069,7 @@
                 
                 this.add.rectangle(w/2, 50, w, 80, 0x2d3561);
                 this.add.text(w/2, 50, 'PUZZLE MODE', {fontSize:'32px', fontFamily:'Arial Black', color:'#fff', stroke:'#000', strokeThickness:6}).setOrigin(0.5);
-                
+                // this.createGridSizeSelector(w/2, 50 * 0.75);
                 this.cellSize = Math.min(80, (w-100)/4);
                 this.startX = (w-this.cellSize*4)/2;
                 this.startY = 140;
@@ -1100,6 +1104,51 @@
                 this.makeBackBtn(30, 50, () => this.scene.start('MainMenu'));
                 this.makeCheckBtn(w/2, h-70, () => this.checkSolution());
             }
+
+            createGridSizeSelector(x, y) {
+              const buttonWidth = 55*this.uiScale;  // Bigger buttons
+              const spacing = 15*this.uiScale;      // More spacing
+              const sizes = [3,4,5,6];
+              const startX = x - ((sizes.length*buttonWidth + (sizes.length-1)*spacing)/2);
+
+              sizes.forEach((size, i) => {
+                  const btnX = startX + i*(buttonWidth+spacing) + buttonWidth/2;
+                  const isSelected = size === this.gridSize;
+
+                  const btn = this.add.rectangle(btnX, y, buttonWidth, buttonWidth*0.85, 
+                      isSelected ? 0x1dd1a1 : 0x64748b).setInteractive();
+                  btn.setStrokeStyle(3*this.uiScale, isSelected ? 0x10ac84 : 0x475569);
+
+                  this.add.text(btnX, y, `${size}×${size}`, {  // Using × symbol
+                      fontFamily: 'Arial Black',
+                      fontSize: `${Math.floor(18*this.uiScale)}px`,  // Bigger text
+                      color: '#ffffff',
+                      stroke: '#000000',
+                      strokeThickness: Math.floor(3*this.uiScale)
+                  }).setOrigin(0.5);
+
+                  btn.on('pointerdown', () => {
+                      if(size !== this.gridSize) {
+                          this.scene.restart({
+                              gridSize: size, 
+                              isDailyMode: this.isDailyMode,
+                              isFreeMode: this.isFreeMode
+                          });
+                      }
+                  });
+
+                  // Hover effect
+                  btn.on('pointerover', () => {
+                      if(size !== this.gridSize) {
+                          this.tweens.add({targets: btn, scaleX: 1.1, scaleY: 1.1, duration: 100});
+                      }
+                  });
+
+                  btn.on('pointerout', () => {
+                      this.tweens.add({targets: btn, scaleX: 1, scaleY: 1, duration: 100});
+                  });
+              });
+          }
             
             drawBricks(w, h) {
                 const g = this.add.graphics();
@@ -1111,14 +1160,39 @@
             }
             
             genPuzzle() {
-                const words = ['CATS','ANTS','TARS','STAR'];
-                this.solution = words.map(w => w.split(''));
+                // const words = ['CATS','ANTS','TARS','STAR'];
+                // this.solution = words.map(w => w.split(''));
+                // this.grid = JSON.parse(JSON.stringify(this.solution));
+                // const letters = [];
+                // for(let r=0; r<4; r++) for(let c=0; c<4; c++) letters.push(this.grid[r][c]);
+                // for(let i=15; i>0; i--) { const j=Math.floor(Math.random()*(i+1)); [letters[i],letters[j]]=[letters[j],letters[i]]; }
+                // let idx=0;
+                // for(let r=0; r<4; r++) for(let c=0; c<4; c++) this.grid[r][c]=letters[idx++];
+                // 1. Pick 4 random words from the set
+                const words = Array.from(VALID_WORDS);
+                const selected = [];
+                for (let i = 0; i < 4; i++) {
+                  const word = words[Math.floor(Math.random() * words.length)];
+                  selected.push(word);
+                }
+
+                // 2. Build the crossword solution (rows)
+                this.solution = selected.map(w => w.split(''));
                 this.grid = JSON.parse(JSON.stringify(this.solution));
-                const letters = [];
-                for(let r=0; r<4; r++) for(let c=0; c<4; c++) letters.push(this.grid[r][c]);
-                for(let i=15; i>0; i--) { const j=Math.floor(Math.random()*(i+1)); [letters[i],letters[j]]=[letters[j],letters[i]]; }
-                let idx=0;
-                for(let r=0; r<4; r++) for(let c=0; c<4; c++) this.grid[r][c]=letters[idx++];
+
+                // 3. Shuffle rows
+                for (let r = 3; r > 0; r--) {
+                  const j = Math.floor(Math.random() * (r + 1));
+                  [this.grid[r], this.grid[j]] = [this.grid[j], this.grid[r]];
+                }
+
+                // 4. Shuffle columns
+                for (let c = 3; c > 0; c--) {
+                  const j = Math.floor(Math.random() * (c + 1));
+                  for (let r = 0; r < 4; r++) {
+                    [this.grid[r][c], this.grid[r][j]] = [this.grid[r][j], this.grid[r][c]];
+                  }
+                }
             }
             
             swapCells(r1,c1,r2,c2) {
