@@ -92,12 +92,12 @@ console.error = function(...args) {
 
                 if (gridPoolsRes && gridPoolsRes.ok) {
                     GRID_POOLS = await gridPoolsRes.json();
-                    console.log('Loaded grid pools from GitHub');
+                    alert('Loaded grid pools from GitHub');
                 }
 
                 if (dailyChallengesRes && dailyChallengesRes.ok) {
                     DAILY_CHALLENGES_DATA = await dailyChallengesRes.json();
-                    console.log('Loaded daily challenges from GitHub');
+                    alert('Loaded daily challenges from GitHub');
                 }
             } catch (error) {
                 console.warn('Could not load game data from GitHub:', error);
