@@ -49,6 +49,27 @@ console.error = function(...args) {
             }
         };
 
+        // Fallback daily challenges (used if GitHub loading fails)
+
+        let DAILY_CHALLENGES = {
+            "2025-01-15": {
+                classic: { "3": { letter: "W", row: 1, col: 1 }, "4": { letter: "S", row: 0, col: 2 }, "5": { letter: "T", row: 2, col: 2 }, "6": { letter: "R", row: 1, col: 3 } },
+                scramble: { "3": ['CAT', 'ATE', 'TEN'], "4": ['CATS', 'ANTS', 'TARS', 'STAR'], "5": ['HEART', 'EARTH', 'AFTER', 'RIVER', 'TREES'], "6": ['PLAYER', 'LISTEN', 'ARTIST', 'YEASTS', 'ENLIST', 'RESENT'] }
+            },
+            "2025-01-16": {
+                classic: { "3": { letter: "C", row: 0, col: 0 }, "4": { letter: "A", row: 2, col: 1 }, "5": { letter: "D", row: 3, col: 3 }, "6": { letter: "M", row: 2, col: 4 } },
+                scramble: { "3": ['BAT', 'ART', 'TRY'], "4": ['BOAT', 'OARS', 'ARTS', 'TOSS'], "5": ['BREAD', 'REAMS', 'EASES', 'ASTER', 'DRESS'], "6": ['MASTER', 'ASTERS', 'STEAMS', 'TEASES', 'ERASES', 'RESENT'] }
+            },
+            "2025-01-17": {
+                classic: { "3": { letter: "T", row: 2, col: 2 }, "4": { letter: "B", row: 1, col: 0 }, "5": { letter: "P", row: 0, col: 4 }, "6": { letter: "L", row: 3, col: 2 } },
+                scramble: { "3": ['DOG', 'OAK', 'GET'], "4": ['DOGS', 'OAKS', 'GATE', 'SKYE'], "5": ['PHONE', 'HOUSE', 'OVERT', 'NESTS', 'ERASE'], "6": ['PHONES', 'HOUSES', 'OUSTER', 'NERVES', 'EVERTS', 'STRESS'] }
+            },
+            "2025-12-27": {
+                classic: { "3": { letter: "A", row: 1, col: 0 }, "4": { letter: "R", row: 1, col: 1 }, "5": { letter: "E", row: 2, col: 2 }, "6": { letter: "S", row: 2, col: 3 } },
+                scramble: { "3": ['SUN', 'USE', 'NET'], "4": ['WISE', 'ISLE', 'SLEW', 'EELS'], "5": ['WINTER', 'INLETS', 'NIGHTS', 'TEASES', 'ESTRE', 'RESIST'].map(w => w.slice(0,5)), "6": ['WINTER', 'INLETS', 'NIGHTS', 'TEASES', 'ESTEEM', 'RESIST'] }
+            }
+        };
+
         async function loadWords() {
             try {
                 const urls = [
@@ -67,7 +88,7 @@ console.error = function(...args) {
                 VALID_WORDS = new Set(allWords);
                 WORDS_LOADED = true;
                 console.log(`Loaded ${VALID_WORDS.size} words (3–5 letters)`);
-                alert('words loaded')
+                // alert('words loaded')
             } catch (error) {
                 console.error('Error loading words:', error);
                 // Fallback word list
@@ -92,12 +113,12 @@ console.error = function(...args) {
 
                 if (gridPoolsRes && gridPoolsRes.ok) {
                     GRID_POOLS = await gridPoolsRes.json();
-                    alert('Loaded grid pools from GitHub');
+                    // alert('Loaded grid pools from GitHub');
                 }
 
                 if (dailyChallengesRes && dailyChallengesRes.ok) {
-                    DAILY_CHALLENGES_DATA = await dailyChallengesRes.json();
-                    alert('Loaded daily challenges from GitHub');
+                    DAILY_CHALLENGES = await dailyChallengesRes.json();
+                    // alert('Loaded daily challenges from GitHub');
                 }
             } catch (error) {
                 console.warn('Could not load game data from GitHub:', error);
@@ -106,35 +127,14 @@ console.error = function(...args) {
 
         loadGameData();
 
-        // Fallback daily challenges (used if GitHub loading fails)
-
-        const DAILY_CHALLENGES = {
-            "2025-01-15": {
-                classic: { "3": { letter: "W", row: 1, col: 1 }, "4": { letter: "S", row: 0, col: 2 }, "5": { letter: "T", row: 2, col: 2 }, "6": { letter: "R", row: 1, col: 3 } },
-                scramble: { "3": ['CAT', 'ATE', 'TEN'], "4": ['CATS', 'ANTS', 'TARS', 'STAR'], "5": ['HEART', 'EARTH', 'AFTER', 'RIVER', 'TREES'], "6": ['PLAYER', 'LISTEN', 'ARTIST', 'YEASTS', 'ENLIST', 'RESENT'] }
-            },
-            "2025-01-16": {
-                classic: { "3": { letter: "C", row: 0, col: 0 }, "4": { letter: "A", row: 2, col: 1 }, "5": { letter: "D", row: 3, col: 3 }, "6": { letter: "M", row: 2, col: 4 } },
-                scramble: { "3": ['BAT', 'ART', 'TRY'], "4": ['BOAT', 'OARS', 'ARTS', 'TOSS'], "5": ['BREAD', 'REAMS', 'EASES', 'ASTER', 'DRESS'], "6": ['MASTER', 'ASTERS', 'STEAMS', 'TEASES', 'ERASES', 'RESENT'] }
-            },
-            "2025-01-17": {
-                classic: { "3": { letter: "T", row: 2, col: 2 }, "4": { letter: "B", row: 1, col: 0 }, "5": { letter: "P", row: 0, col: 4 }, "6": { letter: "L", row: 3, col: 2 } },
-                scramble: { "3": ['DOG', 'OAK', 'GET'], "4": ['DOGS', 'OAKS', 'GATE', 'SKYE'], "5": ['PHONE', 'HOUSE', 'OVERT', 'NESTS', 'ERASE'], "6": ['PHONES', 'HOUSES', 'OUSTER', 'NERVES', 'EVERTS', 'STRESS'] }
-            },
-            "2025-12-27": {
-                classic: { "3": { letter: "A", row: 1, col: 0 }, "4": { letter: "R", row: 1, col: 1 }, "5": { letter: "E", row: 2, col: 2 }, "6": { letter: "S", row: 2, col: 3 } },
-                scramble: { "3": ['SUN', 'USE', 'NET'], "4": ['WISE', 'ISLE', 'SLEW', 'EELS'], "5": ['WINTER', 'INLETS', 'NIGHTS', 'TEASES', 'ESTRE', 'RESIST'].map(w => w.slice(0,5)), "6": ['WINTER', 'INLETS', 'NIGHTS', 'TEASES', 'ESTEEM', 'RESIST'] }
-            }
-        };
-
         function getTodayDate() {
             const now = new Date();
             return now.toISOString().split('T')[0];
         }
 
-        function getDailyChallengeData(date, gridSize) {
+        function getDailyChallengeData(date, gridSize, mode) {
             const challenges = DAILY_CHALLENGES[date];
-            return challenges ? challenges[gridSize.toString()] : null;
+            return challenges ? challenges[mode][gridSize.toString()] : null;
         }
 
         function isDailyChallengeCompleted(date, gridSize) {
@@ -423,15 +423,16 @@ console.error = function(...args) {
 
             setupDailyChallenge() {
                 const challengeData = getDailyChallengeData(this.todayDate, this.gridSize, 'classic');
-                
                 if(!challengeData || !this.solutionGrid) {
                     this.pickRandomStartingLetter();
                     return;
                 }
 
-                const {letter, row, col} = challengeData;
-                this.startingCell = [row, col];
-                this.grid[row][col] = letter.toUpperCase();
+                const startingData = challengeData['starting'];
+                const row = startingData['row'];
+                const col = startingData['col'];
+                this.startingCell = [startingData['row'], startingData['col']];
+                this.grid[row][col] = startingData['letter']?.toUpperCase();
 
                 for(let r = 0; r < this.gridSize; r++) {
                     for(let c = 0; c < this.gridSize; c++) {
@@ -517,7 +518,7 @@ console.error = function(...args) {
                 const topRowY = deleteKeyY - spacing * 3.5;
 
                 const rows = [10, 9, 7];
-                const letters = 'Q W E R T Y U I O PA S D F G H J K L Z X C V B N M'.split(' ');
+                const letters = 'Q W E R T Y U I O P A S D F G H J K L Z X C V B N M'.split(' ');
                 let index = 0;
 
                 rows.forEach((count, row) => {
@@ -1215,13 +1216,13 @@ console.error = function(...args) {
             create() {
                 const {width, height} = this.cameras.main;
                 const minDim = Math.min(width, height);
-                const uiScale = minDim / 750;
+                const uiScale = minDim / 450;
                 const todayDate = getTodayDate();
 
                 drawBricks(this, width, height);
 
                 this.add.rectangle(width/2, height*0.12, width, height*0.12, 0x2d3561);
-                this.add.text(width/2, height*0.06, 'DAILY CHALLENGE', {
+                this.add.text(width/2, height*0.14, 'DAILY CHALLENGE', {
                     fontFamily: 'Arial Black',
                     fontSize: `${Math.floor(32*uiScale)}px`,
                     color: '#ffffff',
@@ -1239,7 +1240,7 @@ console.error = function(...args) {
                 this.createModeTabs(width/2, height*0.18, uiScale);
 
                 // Grid size buttons
-                const sizes = [3, 4, 5, 6];
+                const sizes = [3, 4, 5];
                 const startY = height * 0.30;
                 const spacing = height * 0.15;
 
@@ -1249,7 +1250,6 @@ console.error = function(...args) {
                     const isScrambleCompleted = isDailyChallengeCompleted(todayDate, size, 'scramble');
                     const classicData = getDailyChallengeData(todayDate, size, 'classic');
                     const scrambleData = getDailyChallengeData(todayDate, size, 'scramble');
-
                     this.createChallengeButton(width/2, y, size, isClassicCompleted, isScrambleCompleted, 
                                                classicData, scrambleData, uiScale);
                 });
