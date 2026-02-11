@@ -14500,11 +14500,771 @@
           "row": 2,
           "col": 0
         }
+      },
+      {
+        "grid": [
+          [
+            "H",
+            "O",
+            "G"
+          ],
+          [
+            "E",
+            "W",
+            "E"
+          ],
+          [
+            "H",
+            "E",
+            "N"
+          ]
+        ],
+        "solution": [
+          "HOG",
+          "EWE",
+          "HEN"
+        ],
+        "starting": {
+          "letter": "G",
+          "row": 0,
+          "col": 2
+        },
+        "theme": "farm"
+      },
+      {
+        "grid": [
+          [
+            "E",
+            "A",
+            "R"
+          ],
+          [
+            "E",
+            "Y",
+            "E"
+          ],
+          [
+            "L",
+            "E",
+            "G"
+          ]
+        ],
+        "solution": [
+          "EAR",
+          "EYE",
+          "LEG"
+        ],
+        "starting": {
+          "letter": "L",
+          "row": 2,
+          "col": 0
+        },
+        "theme": "body"
+      },
+      {
+        "grid": [
+          [
+            "T",
+            "A",
+            "R"
+          ],
+          [
+            "O",
+            "R",
+            "E"
+          ],
+          [
+            "M",
+            "U",
+            "D"
+          ]
+        ],
+        "solution": [
+          "TAR",
+          "ORE",
+          "MUD"
+        ],
+        "starting": {
+          "letter": "D",
+          "row": 2,
+          "col": 2
+        },
+        "theme": "earth"
+      },
+      {
+        "grid": [
+          [
+            "H",
+            "I",
+            "P"
+          ],
+          [
+            "E",
+            "Y",
+            "E"
+          ],
+          [
+            "T",
+            "O",
+            "E"
+          ]
+        ],
+        "solution": [
+          "HIP",
+          "EYE",
+          "TOE"
+        ],
+        "starting": {
+          "letter": "I",
+          "row": 0,
+          "col": 1
+        },
+        "theme": "body"
+      },
+      {
+        "grid": [
+          [
+            "A",
+            "W",
+            "L"
+          ],
+          [
+            "H",
+            "O",
+            "E"
+          ],
+          [
+            "S",
+            "A",
+            "W"
+          ]
+        ],
+        "solution": [
+          "AWL",
+          "HOE",
+          "SAW"
+        ],
+        "starting": {
+          "letter": "L",
+          "row": 0,
+          "col": 2
+        },
+        "theme": "tools"
+      },
+      {
+        "grid": [
+          [
+            "H",
+            "I",
+            "P"
+          ],
+          [
+            "E",
+            "A",
+            "R"
+          ],
+          [
+            "T",
+            "O",
+            "E"
+          ]
+        ],
+        "solution": [
+          "HIP",
+          "EAR",
+          "TOE"
+        ],
+        "starting": {
+          "letter": "P",
+          "row": 0,
+          "col": 2
+        },
+        "theme": "body"
+      },
+      {
+        "grid": [
+          [
+            "F",
+            "I",
+            "R"
+          ],
+          [
+            "I",
+            "V",
+            "Y"
+          ],
+          [
+            "R",
+            "Y",
+            "E"
+          ]
+        ],
+        "solution": [
+          "FIR",
+          "IVY",
+          "RYE"
+        ],
+        "starting": {
+          "letter": "R",
+          "row": 0,
+          "col": 2
+        },
+        "theme": "plants"
+      },
+      {
+        "grid": [
+          [
+            "Y",
+            "A",
+            "K"
+          ],
+          [
+            "E",
+            "M",
+            "U"
+          ],
+          [
+            "A",
+            "P",
+            "E"
+          ]
+        ],
+        "solution": [
+          "YAK",
+          "EMU",
+          "APE"
+        ],
+        "starting": {
+          "letter": "M",
+          "row": 1,
+          "col": 1
+        },
+        "theme": "zoo"
+      },
+      {
+        "grid": [
+          [
+            "L",
+            "I",
+            "P"
+          ],
+          [
+            "E",
+            "Y",
+            "E"
+          ],
+          [
+            "T",
+            "O",
+            "E"
+          ]
+        ],
+        "solution": [
+          "LIP",
+          "EYE",
+          "TOE"
+        ],
+        "starting": {
+          "letter": "E",
+          "row": 1,
+          "col": 2
+        },
+        "theme": "body"
+      },
+      {
+        "grid": [
+          [
+            "J",
+            "A",
+            "W"
+          ],
+          [
+            "E",
+            "Y",
+            "E"
+          ],
+          [
+            "G",
+            "U",
+            "M"
+          ]
+        ],
+        "solution": [
+          "JAW",
+          "EYE",
+          "GUM"
+        ],
+        "starting": {
+          "letter": "W",
+          "row": 0,
+          "col": 2
+        },
+        "theme": "head"
+      },
+      {
+        "grid": [
+          [
+            "R",
+            "U",
+            "M"
+          ],
+          [
+            "A",
+            "L",
+            "E"
+          ],
+          [
+            "T",
+            "E",
+            "A"
+          ]
+        ],
+        "solution": [
+          "RUM",
+          "ALE",
+          "TEA"
+        ],
+        "starting": {
+          "letter": "A",
+          "row": 1,
+          "col": 0
+        },
+        "theme": "drinks"
+      },
+      {
+        "grid": [
+          [
+            "A",
+            "R",
+            "M"
+          ],
+          [
+            "T",
+            "O",
+            "E"
+          ],
+          [
+            "E",
+            "Y",
+            "E"
+          ]
+        ],
+        "solution": [
+          "ARM",
+          "TOE",
+          "EYE"
+        ],
+        "starting": {
+          "letter": "A",
+          "row": 0,
+          "col": 0
+        },
+        "theme": "body"
+      },
+      {
+        "grid": [
+          [
+            "J",
+            "A",
+            "W"
+          ],
+          [
+            "E",
+            "Y",
+            "E"
+          ],
+          [
+            "G",
+            "U",
+            "T"
+          ]
+        ],
+        "solution": [
+          "JAW",
+          "EYE",
+          "GUT"
+        ],
+        "starting": {
+          "letter": "Y",
+          "row": 1,
+          "col": 1
+        },
+        "theme": "body"
+      },
+      {
+        "grid": [
+          [
+            "T",
+            "A",
+            "R"
+          ],
+          [
+            "O",
+            "R",
+            "E"
+          ],
+          [
+            "A",
+            "S",
+            "H"
+          ]
+        ],
+        "solution": [
+          "TAR",
+          "ORE",
+          "ASH"
+        ],
+        "starting": {
+          "letter": "O",
+          "row": 1,
+          "col": 0
+        },
+        "theme": "earth"
+      },
+      {
+        "grid": [
+          [
+            "L",
+            "I",
+            "P"
+          ],
+          [
+            "E",
+            "A",
+            "R"
+          ],
+          [
+            "T",
+            "O",
+            "E"
+          ]
+        ],
+        "solution": [
+          "LIP",
+          "EAR",
+          "TOE"
+        ],
+        "starting": {
+          "letter": "O",
+          "row": 2,
+          "col": 1
+        },
+        "theme": "body"
+      },
+      {
+        "grid": [
+          [
+            "G",
+            "I",
+            "N"
+          ],
+          [
+            "A",
+            "L",
+            "E"
+          ],
+          [
+            "T",
+            "E",
+            "A"
+          ]
+        ],
+        "solution": [
+          "GIN",
+          "ALE",
+          "TEA"
+        ],
+        "starting": {
+          "letter": "A",
+          "row": 1,
+          "col": 0
+        },
+        "theme": "drinks"
+      },
+      {
+        "grid": [
+          [
+            "T",
+            "O",
+            "E"
+          ],
+          [
+            "A",
+            "R",
+            "M"
+          ],
+          [
+            "E",
+            "Y",
+            "E"
+          ]
+        ],
+        "solution": [
+          "TOE",
+          "ARM",
+          "EYE"
+        ],
+        "starting": {
+          "letter": "R",
+          "row": 1,
+          "col": 1
+        },
+        "theme": "body"
+      },
+      {
+        "grid": [
+          [
+            "L",
+            "E",
+            "G"
+          ],
+          [
+            "E",
+            "Y",
+            "E"
+          ],
+          [
+            "A",
+            "R",
+            "M"
+          ]
+        ],
+        "solution": [
+          "LEG",
+          "EYE",
+          "ARM"
+        ],
+        "starting": {
+          "letter": "Y",
+          "row": 1,
+          "col": 1
+        },
+        "theme": "body"
+      },
+      {
+        "grid": [
+          [
+            "B",
+            "A",
+            "Y"
+          ],
+          [
+            "I",
+            "C",
+            "E"
+          ],
+          [
+            "S",
+            "E",
+            "A"
+          ]
+        ],
+        "solution": [
+          "BAY",
+          "ICE",
+          "SEA"
+        ],
+        "starting": {
+          "letter": "Y",
+          "row": 0,
+          "col": 2
+        },
+        "theme": "water"
+      },
+      {
+        "grid": [
+          [
+            "F",
+            "O",
+            "G"
+          ],
+          [
+            "I",
+            "C",
+            "E"
+          ],
+          [
+            "B",
+            "A",
+            "Y"
+          ]
+        ],
+        "solution": [
+          "FOG",
+          "ICE",
+          "BAY"
+        ],
+        "starting": {
+          "letter": "O",
+          "row": 0,
+          "col": 1
+        },
+        "theme": "water"
+      },
+      {
+        "grid": [
+          [
+            "A",
+            "S",
+            "H"
+          ],
+          [
+            "R",
+            "Y",
+            "E"
+          ],
+          [
+            "E",
+            "L",
+            "M"
+          ]
+        ],
+        "solution": [
+          "ASH",
+          "RYE",
+          "ELM"
+        ],
+        "starting": {
+          "letter": "E",
+          "row": 2,
+          "col": 0
+        },
+        "theme": "plants"
+      },
+      {
+        "grid": [
+          [
+            "B",
+            "A",
+            "Y"
+          ],
+          [
+            "I",
+            "C",
+            "E"
+          ],
+          [
+            "D",
+            "E",
+            "W"
+          ]
+        ],
+        "solution": [
+          "BAY",
+          "ICE",
+          "DEW"
+        ],
+        "starting": {
+          "letter": "I",
+          "row": 1,
+          "col": 0
+        },
+        "theme": "water"
+      },
+      {
+        "grid": [
+          [
+            "R",
+            "I",
+            "B"
+          ],
+          [
+            "E",
+            "Y",
+            "E"
+          ],
+          [
+            "T",
+            "O",
+            "E"
+          ]
+        ],
+        "solution": [
+          "RIB",
+          "EYE",
+          "TOE"
+        ],
+        "starting": {
+          "letter": "Y",
+          "row": 1,
+          "col": 1
+        },
+        "theme": "body"
+      },
+      {
+        "grid": [
+          [
+            "M",
+            "U",
+            "D"
+          ],
+          [
+            "O",
+            "R",
+            "E"
+          ],
+          [
+            "T",
+            "A",
+            "R"
+          ]
+        ],
+        "solution": [
+          "MUD",
+          "ORE",
+          "TAR"
+        ],
+        "starting": {
+          "letter": "T",
+          "row": 2,
+          "col": 0
+        },
+        "theme": "earth"
       }
     ]
   },
   "4": {
     "grids": [
+      {
+        "grid": [
+          [
+            "L",
+            "O",
+            "S",
+            "S"
+          ],
+          [
+            "A",
+            "G",
+            "I",
+            "O"
+          ],
+          [
+            "L",
+            "O",
+            "T",
+            "S"
+          ],
+          [
+            "O",
+            "R",
+            "E",
+            "S"
+          ]
+        ],
+        "solution": [
+          "LOSS",
+          "AGIO",
+          "LOTS",
+          "ORES"
+        ],
+        "starting": {
+          "letter": "O",
+          "row": 0,
+          "col": 1
+        },
+        "theme": "mixed"
+      },
       {
         "grid": [
           [
@@ -34722,6 +35482,46 @@
           "row": 1,
           "col": 1
         }
+      },
+      {
+        "grid": [
+          [
+            "L",
+            "O",
+            "S",
+            "S"
+          ],
+          [
+            "A",
+            "G",
+            "I",
+            "O"
+          ],
+          [
+            "L",
+            "O",
+            "T",
+            "S"
+          ],
+          [
+            "O",
+            "R",
+            "E",
+            "S"
+          ]
+        ],
+        "solution": [
+          "LOSS",
+          "AGIO",
+          "LOTS",
+          "ORES"
+        ],
+        "starting": {
+          "letter": "S",
+          "row": 2,
+          "col": 3
+        },
+        "theme": "mixed"
       },
       {
         "grid": [
