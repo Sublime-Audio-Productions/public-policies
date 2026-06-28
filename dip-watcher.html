@@ -86,6 +86,18 @@
                 }
 
                 // Fallback: Generate realistic mock data based on symbol
+                const companyNames = {
+                    'AAPL': 'Apple Inc.', 'MSFT': 'Microsoft Corp.', 'GOOGL': 'Alphabet Inc.', 'AMZN': 'Amazon.com Inc.', 'TSLA': 'Tesla Inc.',
+                    'META': 'Meta Platforms Inc.', 'NVDA': 'NVIDIA Corp.', 'AMD': 'Advanced Micro Devices', 'INTEL': 'Intel Corp.', 'ADBE': 'Adobe Inc.',
+                    'CRM': 'Salesforce Inc.', 'NFLX': 'Netflix Inc.', 'SNPS': 'Synopsys Inc.', 'ASML': 'ASML Holding', 'QCOM': 'Qualcomm Inc.',
+                    'BABA': 'Alibaba Group', 'SAP': 'SAP SE', 'INFY': 'Infosys Limited',
+                    'SPY': 'S&P 500 ETF', 'QQQ': 'Nasdaq-100 ETF', 'VOO': 'Vanguard S&P 500 ETF', 'IWM': 'Russell 2000 ETF', 
+                    'XLV': 'Health Care Select Sector ETF', 'XLK': 'Tech Select Sector ETF', 'XLC': 'Comm Services Sector ETF', 
+                    'XLE': 'Energy Select Sector ETF', 'XLF': 'Financials Select Sector ETF',
+                    'EWU': 'iShares MSCI UK ETF', 'EWG': 'iShares MSCI Germany ETF', 'EWJ': 'iShares MSCI Japan ETF', 
+                    'EWA': 'iShares MSCI Australia ETF', 'ASHR': 'Arca China Index ETF', 'FXI': 'iShares China Large-Cap ETF', 'INDL': 'India ETF'
+                };
+
                 const mockPrices = {
                     'AAPL': 175.42, 'MSFT': 425.89, 'GOOGL': 142.30, 'AMZN': 178.45, 'TSLA': 242.84,
                     'META': 502.35, 'NVDA': 875.23, 'AMD': 189.50, 'INTEL': 42.15, 'ADBE': 687.45,
@@ -104,7 +116,7 @@
 
                 return {
                     id: symbol,
-                    name: symbol,
+                    name: companyNames[symbol] || symbol,
                     symbol,
                     type: 'stock',
                     currentPrice: parseFloat(currentPrice.toFixed(2)),
