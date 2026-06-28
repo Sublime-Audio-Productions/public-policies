@@ -33,24 +33,24 @@ const FINNHUB_API_KEY = "d90f5mhr01qk8bflc40gd90f5mhr01qk8bflc410";
 ========================= */
 const SYMBOLS = {
     indexes: [
-        "^GSPC",  // S&P 500
-        "^NDX",   // NASDAQ 100
-        "^N225",  // Nikkei 225
-        "^HSI",   // Hang Seng
-        "000300.SS" // CSI 300 (China)
+        "SPY",    // S&P 500 ETF (alternative to ^GSPC)
+        "QQQ",    // NASDAQ 100 ETF (alternative to ^NDX)
+        "EWJ",    // Japan (alternative to ^N225)
+        "EWH",    // Hong Kong (alternative to ^HSI)
+        "VXUS"    // International (alternative to 000300.SS)
     ],
     stocks: [
         "AAPL", "MSFT", "GOOGL", "AMZN", "TSLA",
         "META", "NVDA", "AMD", "ADBE", "NFLX",
-        "CRM", "ASML", "INTC", "QCOM", "AVGO"
+        "CRM", "INTC", "QCOM", "AVGO", "PYPL"
     ],
     etfs: [
-        "SPY", "QQQ", "VOO", "IWM", "EEM", "GLD",
+        "IVV", "VOO", "VTI", "IWM", "EEM", "GLD",
         "XLK", "XLF", "XLE", "XLV"
     ],
     crypto: [
         "bitcoin", "ethereum", "cardano", "solana", "ripple",
-        "dogecoin", "polkadot", "litecoin"
+        "monero", "stellar", "avalanche-2"
     ]
 };
 
@@ -58,11 +58,11 @@ const SYMBOLS = {
    READABLE NAMES MAPPING
 ========================= */
 const NAMES = {
-    "^GSPC": "S&P 500",
-    "^NDX": "NASDAQ 100",
-    "^N225": "Nikkei 225",
-    "^HSI": "Hang Seng 50",
-    "000300.SS": "CSI 300 (China)",
+    "SPY": "S&P 500",
+    "QQQ": "NASDAQ 100",
+    "EWJ": "Japan (Nikkei)",
+    "EWH": "Hong Kong",
+    "VXUS": "International Stocks",
     "AAPL": "Apple Inc.",
     "MSFT": "Microsoft",
     "GOOGL": "Alphabet",
@@ -74,13 +74,13 @@ const NAMES = {
     "ADBE": "Adobe",
     "NFLX": "Netflix",
     "CRM": "Salesforce",
-    "ASML": "ASML",
     "INTC": "Intel",
     "QCOM": "Qualcomm",
     "AVGO": "Broadcom",
-    "SPY": "S&P 500 ETF",
-    "QQQ": "NASDAQ 100 ETF",
+    "PYPL": "PayPal",
+    "IVV": "iShares Core S&P 500",
     "VOO": "Vanguard S&P 500",
+    "VTI": "Total US Stock",
     "IWM": "Russell 2000",
     "EEM": "MSCI Emerging Markets",
     "GLD": "Gold",
@@ -93,9 +93,9 @@ const NAMES = {
     "cardano": "Cardano",
     "solana": "Solana",
     "ripple": "XRP",
-    "dogecoin": "Dogecoin",
-    "polkadot": "Polkadot",
-    "litecoin": "Litecoin"
+    "monero": "Monero",
+    "stellar": "Stellar",
+    "avalanche-2": "Avalanche"
 };
 
 /* =========================
@@ -463,6 +463,7 @@ function DipBuyDashboard() {
                 React.createElement("table", { className: "w-full text-sm" },
                     React.createElement("thead", null,
                         React.createElement("tr", { className: "border-b border-slate-700 bg-slate-800" },
+                            React.createElement("th", { className: "px-4 py-3 text-center text-slate-300 font-semibold w-12" }, "#"),
                             React.createElement("th", { className: "px-4 py-3 text-left text-slate-300 font-semibold cursor-pointer hover:text-white", onClick: () => setSortConfig({ key: 'symbol', direction: 'desc' }) }, "Ticker"),
                             React.createElement("th", { className: "px-4 py-3 text-left text-slate-300 font-semibold cursor-pointer hover:text-white", onClick: () => setSortConfig({ key: 'readableName', direction: 'desc' }) }, "Name"),
                             React.createElement("th", { className: "px-4 py-3 text-right text-slate-300 font-semibold cursor-pointer hover:text-white", onClick: () => setSortConfig({ key: 'currentPrice', direction: 'desc' }) }, "Price"),
@@ -473,11 +474,14 @@ function DipBuyDashboard() {
                         )
                     ),
                     React.createElement("tbody", null,
-                        filteredAssets.map((asset) =>
+                        filteredAssets.map((asset, index) =>
                             React.createElement("tr", {
                                 key: asset.id,
                                 className: "border-b border-slate-700/50 hover:bg-slate-700/30 transition-colors"
                             },
+                                React.createElement("td", { className: "px-4 py-3 text-center text-slate-500 font-semibold w-12" },
+                                    index + 1
+                                ),
                                 React.createElement("td", { className: "px-4 py-3 font-semibold text-white" },
                                     asset.symbol
                                 ),
