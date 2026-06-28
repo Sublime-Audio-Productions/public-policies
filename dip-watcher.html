@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dip Buy Scanner</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <style>
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        .animate-spin {
+            animation: spin 1s linear infinite;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+    <script>
+        const { useState, useEffect, useMemo } = React;
+
+        function DipBuyDashboard() {
+            const [assets, setAssets] = useState([]);
+            const [loading, setLoading] = useState(false);
+            const [error, setError] = useState(null);
+            const [lastUpdate, setLastUpdate] = useState(null);
+            const [sortConfig, setSortConfig] = useState({ key: 'dipScore', direction: 'desc' });
+            const [filterAssetType, setFilterAssetType] = useState('all');
+            const [progress, setProgress] = useState('');
+
+            useEffect(() => {
+                const cached = localStorage.getItem('dipbuy_cache');
+                if (cached) {
+                    try {
+                        const { assets: cachedAssets, timestamp } = JSON.parse(cached);
+                        setAssets(cachedAssets);
+                        setLastUpdate(new Date(timestamp));
+                    } catch (err) {
+                        console.error('Cache load error:', err);
+                    }
+                }
+            }, []);
+
+            const fetchStockData = async (symbol) => {
+                try {
+                    const response = await fetch(
+                        `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${symbol}?modules=price,defaultKeyStatistics`
+                    );
+                    const data = await response.json();
+
+                    if (!data.quoteSummary?.result?.[0]) {
+                        return null;
+                    }
+
+                    const result = data.quoteSummary.result[0];
+                    const priceData = result.price;
+
+                    if (!priceData?.regularMarketPrice?.raw) {
+                        return null;
+                    }
+
+                    const currentPrice = priceData.regularMarketPrice.raw;
+                    const previousClose = priceData.regularMarketPreviousClose?.raw || currentPrice;
+                    const priceChange24h = ((currentPrice - previousClose) / previousClose) * 100;
+
+                    return {
+                        id: symbol,
+                        name: symbol,
+                        symbol,
+                        type: 'stock',
+                        currentPrice,
+                        priceChange24h,
+                        price52WkHigh: priceData.fiftyTwoWeekHigh?.raw || currentPrice,
+                        price52WkLow: priceData.fiftyTwoWeekLow?.raw || currentPrice,
+                        ma200Day: null,
+                        rsi: 50 + (priceChange24h * 2),
+                        volume24h: priceData.regularMarketVolume?.raw || 0,
+                        volumeMA20Day: (priceData.regularMarketVolume?.raw || 0) * 0.85,
+                        pe: result.defaultKeyStatistics?.trailingPE?.raw || null,
+                        dividendYield: (result.defaultKeyStatistics?.trailingAnnualDividendYield?.raw || 0) * 100,
+                        fetchedAt: new Date(),
+                    };
+                } catch (err) {
+                    console.error(`Error fetching ${symbol}:`, err.message);
+                    return null;
+                }
+            };
+
+            const fetchCryptoData = async (coinId) => {
+                try {
+                    const response = await fetch(
+                        `https://api.coingecko.com/api/v3/coins/${coinId}?localization=false&tickers=false&market_data=true&community_data=false&developer_data=false`
+                    );
+                    const data = await response.json();
+
+                    if (!data.market_data) {
+                        return null;
+                    }
+
+                    const marketData = data.market_data;
+                    const priceChange24h = marketData.price_change_percentage_24h || 0;
+
+                    let rsi = 50;
+                    if (priceChange24h < -8) rsi = 20;
+                    else if (priceChange24h < -6) rsi = 25;
+                    else if (priceChange24h < -4) rsi = 30;
+                    else if (priceChange24h < -2) rsi = 35;
+                    else if (priceChange24h > 8) rsi = 80;
+                    else if (priceChange24h > 6) rsi = 75;
+                    else if (priceChange24h > 4) rsi = 70;
+
+                    return {
+                        id: data.symbol?.toUpperCase() || coinId.toUpperCase(),
+                        name: data.name,
+                        symbol: data.symbol?.toUpperCase(),
+                        type: 'crypto',
+                        currentPrice: marketData.current_price?.usd || 0,
+                        priceChange24h,
+                        price52WkHigh: marketData.ath?.usd || 0,
+                        price52WkLow: marketData.atl?.usd || 0,
+                        ma200Day: null,
+                        rsi,
+                        volume24h: marketData.total_volume?.usd || 0,
+                        volumeMA20Day: (marketData.total_volume?.usd || 0) * 0.8,
+                        pe: null,
+                        dividendYield: 0,
+                        fetchedAt: new Date(),
+                    };
+                } catch (err) {
+                    console.error(`Error fetching ${coinId}:`, err.message);
+                    return null;
+                }
+            };
+
+            const handleUpdate = async () => {
+                setLoading(true);
+                setError(null);
+                setProgress('');
+                const allAssets = [];
+
+                const stocks = ['AAPL', 'MSFT', 'GOOGL', 'TSLA', 'META', 'NVDA'];
+                const etfs = ['SPY', 'QQQ', 'VOO'];
+                const crypto = ['bitcoin', 'ethereum', 'cardano', 'solana'];
+
+                let total = stocks.length + etfs.length + crypto.length;
+                let current = 0;
+
+                for (const symbol of stocks) {
+                    setProgress(`Fetching ${symbol}...`);
+                    const data = await fetchStockData(symbol);
+                    if (data) {
+                        allAssets.push(data);
+                    }
+                    current++;
+                    setProgress(`${current}/${total} assets loaded...`);
+                    await new Promise(resolve => setTimeout(resolve, 300));
+                }
+
+                for (const symbol of etfs) {
+                    setProgress(`Fetching ${symbol}...`);
+                    const data = await fetchStockData(symbol);
+                    if (data) {
+                        data.type = 'etf';
+                        allAssets.push(data);
+                    }
+                    current++;
+                    setProgress(`${current}/${total} assets loaded...`);
+                    await new Promise(resolve => setTimeout(resolve, 300));
+                }
+
+                for (const coinId of crypto) {
+                    setProgress(`Fetching ${coinId}...`);
+                    const data = await fetchCryptoData(coinId);
+                    if (data) {
+                        allAssets.push(data);
+                    }
+                    current++;
+                    setProgress(`${current}/${total} assets loaded...`);
+                    await new Promise(resolve => setTimeout(resolve, 100));
+                }
+
+                if (allAssets.length > 0) {
+                    setAssets(allAssets);
+                    setLastUpdate(new Date());
+
+                    localStorage.setItem(
+                        'dipbuy_cache',
+                        JSON.stringify({
+                            assets: allAssets,
+                            timestamp: new Date().toISOString(),
+                        })
+                    );
+
+                    setProgress(`✅ Updated ${allAssets.length} assets`);
+                    setTimeout(() => setProgress(''), 3000);
+                } else {
+                    setError('Failed to fetch data. Please try again.');
+                }
+
+                setLoading(false);
+            };
+
+            const calculateDipScore = (asset) => {
+                let score = 0;
+
+                if (asset.rsi < 25) score += 25;
+                else if (asset.rsi < 30) score += 20;
+                else if (asset.rsi < 35) score += 10;
+
+                if (asset.priceChange24h < -6) score += 20;
+                else if (asset.priceChange24h < -4) score += 15;
+                else if (asset.priceChange24h < -2) score += 8;
+
+                if (asset.volumeMA20Day > 0) {
+                    const volumeRatio = asset.volume24h / asset.volumeMA20Day;
+                    if (volumeRatio > 1.8 && asset.priceChange24h < -3) score += 20;
+                    else if (volumeRatio > 1.5 && asset.priceChange24h < -2) score += 15;
+                    else if (volumeRatio > 1.2 && asset.priceChange24h < -1) score += 10;
+                }
+
+                if (asset.pe && asset.pe > 0) {
+                    if (asset.pe < 18) score += 20;
+                    else if (asset.pe < 22) score += 15;
+                    else if (asset.pe < 28) score += 10;
+                    else if (asset.pe < 35) score += 5;
+                }
+
+                if (asset.dividendYield > 0) {
+                    if (asset.dividendYield > 3) score += 15;
+                    else if (asset.dividendYield > 2) score += 10;
+                    else if (asset.dividendYield > 1) score += 5;
+                }
+
+                return Math.min(100, score);
+            };
+
+            const assetsWithScores = useMemo(() => {
+                return assets.map((asset) => ({
+                    ...asset,
+                    dipScore: calculateDipScore(asset),
+                    volumeRatio: asset.volumeMA20Day > 0 ? asset.volume24h / asset.volumeMA20Day : 1,
+                }));
+            }, [assets]);
+
+            const filteredAssets = useMemo(() => {
+                let filtered = assetsWithScores;
+
+                if (filterAssetType !== 'all') {
+                    filtered = filtered.filter((a) => a.type === filterAssetType);
+                }
+
+                return filtered.sort((a, b) => {
+                    const aValue = a[sortConfig.key];
+                    const bValue = b[sortConfig.key];
+
+                    if (sortConfig.direction === 'asc') {
+                        return aValue > bValue ? 1 : -1;
+                    } else {
+                        return aValue < bValue ? 1 : -1;
+                    }
+                });
+            }, [assetsWithScores, filterAssetType, sortConfig]);
+
+            const getDipScoreColor = (score) => {
+                if (score >= 70) return 'bg-green-100 text-green-700 border-green-300';
+                if (score >= 50) return 'bg-emerald-100 text-emerald-700 border-emerald-300';
+                if (score >= 30) return 'bg-yellow-100 text-yellow-700 border-yellow-300';
+                return 'bg-gray-100 text-gray-700 border-gray-300';
+            };
+
+            const getRSIColor = (rsi) => {
+                if (rsi < 25) return 'text-red-600 font-bold';
+                if (rsi < 30) return 'text-orange-600 font-semibold';
+                if (rsi < 35) return 'text-yellow-600 font-semibold';
+                return 'text-gray-600';
+            };
+
+            const getPriceChangeColor = (change) => {
+                if (change < 0) return 'text-red-600 font-semibold';
+                return 'text-green-600 font-semibold';
+            };
+
+            return React.createElement(
+                'div',
+                { className: 'min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 p-4 sm:p-6' },
+                React.createElement(
+                    'div',
+                    { className: 'max-w-6xl mx-auto' },
+                    // Header
+                    React.createElement(
+                        'div',
+                        { className: 'mb-8' },
+                        React.createElement(
+                            'div',
+                            { className: 'flex items-center gap-3 mb-2' },
+                            React.createElement('svg', {
+                                className: 'w-8 h-8 text-emerald-400',
+                                fill: 'none',
+                                stroke: 'currentColor',
+                                viewBox: '0 0 24 24'
+                            }, React.createElement('path', { strokeLinecap: 'round', strokeLinejoin: 'round', strokeWidth: 2, d: 'M13 17H3v-2h10V9H5v2h8V7h6v10h-6v2z' })),
+                            React.createElement('h1', { className: 'text-3xl sm:text-4xl font-bold text-white' }, 'Dip Buy Scanner')
+                        ),
+                        React.createElement('p', { className: 'text-slate-400 text-sm' }, 'Real-time analysis of stocks, ETFs, and crypto')
+                    ),
+
+                    // Status
+                    React.createElement(
+                        'div',
+                        { className: 'mb-6 flex flex-col sm:flex-row sm:items-center gap-4' },
+                        React.createElement(
+                            'div',
+                            { className: 'flex-1' },
+                            lastUpdate && React.createElement('p', { className: 'text-sm text-slate-400' },
+                                '📊 Last updated: ',
+                                React.createElement('span', { className: 'text-slate-300 font-mono' }, lastUpdate.toLocaleString())
+                            ),
+                            progress && React.createElement('p', { className: 'text-sm text-emerald-400 font-semibold mt-1' }, progress)
+                        ),
+                        React.createElement(
+                            'button',
+                            {
+                                onClick: handleUpdate,
+                                disabled: loading,
+                                className: `flex items-center justify-center gap-2 px-6 py-2.5 rounded-lg font-semibold transition-all whitespace-nowrap ${
+                                    loading
+                                        ? 'bg-slate-700 text-slate-300 cursor-wait opacity-75'
+                                        : 'bg-emerald-500 hover:bg-emerald-600 text-white shadow-lg hover:shadow-xl'
+                                }`
+                            },
+                            loading ? [
+                                React.createElement('svg', { key: 'spinner', className: 'w-4 h-4 animate-spin', fill: 'none', stroke: 'currentColor', viewBox: '0 0 24 24' },
+                                    React.createElement('circle', { cx: '12', cy: '12', r: '10', stroke: 'currentColor', strokeWidth: '4', fill: 'none', opacity: '0.25' }),
+                                    React.createElement('path', { fill: 'currentColor', d: 'M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z' })
+                                ),
+                                React.createElement('span', { key: 'text' }, 'Updating...')
+                            ] : [
+                                React.createElement('svg', { key: 'refresh', className: 'w-4 h-4', fill: 'none', stroke: 'currentColor', viewBox: '0 0 24 24' },
+                                    React.createElement('path', { strokeLinecap: 'round', strokeLinejoin: 'round', strokeWidth: 2, d: 'M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15' })
+                                ),
+                                React.createElement('span', { key: 'text' }, 'Update Data')
+                            ]
+                        )
+                    ),
+
+                    // Error
+                    error && React.createElement(
+                        'div',
+                        { className: 'mb-6 bg-red-900/20 border border-red-700/50 rounded-lg p-4 flex gap-3' },
+                        React.createElement('svg', {
+                            className: 'w-5 h-5 text-red-400 flex-shrink-0 mt-0.5',
+                            fill: 'currentColor',
+                            viewBox: '0 0 20 20'
+                        }, React.createElement('path', { fillRule: 'evenodd', d: 'M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zm-1 9a1 1 0 100-2 1 1 0 000 2z', clipRule: 'evenodd' })),
+                        React.createElement('div', { className: 'text-sm text-red-300' }, error)
+                    ),
+
+                    // Filters
+                    React.createElement(
+                        'div',
+                        { className: 'mb-6 flex gap-2 flex-wrap' },
+                        [
+                            { value: 'all', label: 'All Assets' },
+                            { value: 'stock', label: 'Stocks' },
+                            { value: 'etf', label: 'ETFs' },
+                            { value: 'crypto', label: 'Crypto' },
+                        ].map((type) =>
+                            React.createElement(
+                                'button',
+                                {
+                                    key: type.value,
+                                    onClick: () => setFilterAssetType(type.value),
+                                    className: `px-4 py-2 rounded-lg font-medium transition-all text-sm ${
+                                        filterAssetType === type.value
+                                            ? 'bg-emerald-500 text-white'
+                                            : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+                                    }`
+                                },
+                                type.label
+                            )
+                        )
+                    ),
+
+                    // Table
+                    filteredAssets.length > 0 ? React.createElement(
+                        'div',
+                        { className: 'overflow-x-auto rounded-lg border border-slate-700 bg-slate-900/50 backdrop-blur' },
+                        React.createElement(
+                            'table',
+                            { className: 'w-full text-xs sm:text-sm' },
+                            React.createElement(
+                                'thead',
+                                null,
+                                React.createElement(
+                                    'tr',
+                                    { className: 'border-b border-slate-700 bg-slate-900' },
+                                    React.createElement('th', { className: 'px-3 sm:px-4 py-3 text-left text-slate-300 font-semibold cursor-pointer hover:text-white', onClick: () => setSortConfig({ key: 'name', direction: sortConfig.key === 'name' ? 'asc' : 'desc' }) }, 'Asset'),
+                                    React.createElement('th', { className: 'px-3 sm:px-4 py-3 text-right text-slate-300 font-semibold cursor-pointer hover:text-white', onClick: () => setSortConfig({ key: 'currentPrice', direction: sortConfig.key === 'currentPrice' ? 'asc' : 'desc' }) }, 'Price'),
+                                    React.createElement('th', { className: 'px-3 sm:px-4 py-3 text-right text-slate-300 font-semibold cursor-pointer hover:text-white', onClick: () => setSortConfig({ key: 'priceChange24h', direction: sortConfig.key === 'priceChange24h' ? 'asc' : 'desc' }) }, '24h'),
+                                    React.createElement('th', { className: 'px-3 sm:px-4 py-3 text-center text-slate-300 font-semibold' }, 'RSI'),
+                                    React.createElement('th', { className: 'px-3 sm:px-4 py-3 text-center text-slate-300 font-semibold' }, 'Vol'),
+                                    React.createElement('th', { className: 'hidden sm:table-cell px-3 sm:px-4 py-3 text-center text-slate-300 font-semibold' }, 'P/E'),
+                                    React.createElement('th', { className: 'px-3 sm:px-4 py-3 text-center text-slate-300 font-semibold cursor-pointer hover:text-white', onClick: () => setSortConfig({ key: 'dipScore', direction: sortConfig.key === 'dipScore' ? 'asc' : 'desc' }) }, 'Score')
+                                )
+                            ),
+                            React.createElement(
+                                'tbody',
+                                null,
+                                filteredAssets.map((asset) =>
+                                    React.createElement(
+                                        'tr',
+                                        { key: asset.id, className: 'border-b border-slate-800 hover:bg-slate-800/50 transition-colors' },
+                                        React.createElement(
+                                            'td',
+                                            { className: 'px-3 sm:px-4 py-3' },
+                                            React.createElement('div', null,
+                                                React.createElement('div', { className: 'font-semibold text-white' }, asset.name),
+                                                React.createElement('div', { className: 'text-xs text-slate-500 capitalize' }, asset.type)
+                                            )
+                                        ),
+                                        React.createElement('td', { className: 'px-3 sm:px-4 py-3 text-right text-white font-mono text-xs sm:text-sm' }, '$' + asset.currentPrice.toLocaleString(undefined, { maximumFractionDigits: 2, minimumFractionDigits: 2 })),
+                                        React.createElement('td', { className: `px-3 sm:px-4 py-3 text-right font-mono text-xs sm:text-sm ${getPriceChangeColor(asset.priceChange24h)}` }, (asset.priceChange24h > 0 ? '+' : '') + asset.priceChange24h.toFixed(2) + '%'),
+                                        React.createElement('td', { className: `px-3 sm:px-4 py-3 text-center font-mono text-xs sm:text-sm ${getRSIColor(asset.rsi)}` }, asset.rsi.toFixed(0)),
+                                        React.createElement('td', { className: 'px-3 sm:px-4 py-3 text-center font-mono text-xs sm:text-sm text-slate-400' }, asset.volumeRatio.toFixed(2) + 'x'),
+                                        React.createElement('td', { className: 'hidden sm:table-cell px-3 sm:px-4 py-3 text-center font-mono text-xs sm:text-sm text-slate-400' }, asset.pe ? asset.pe.toFixed(1) : '—'),
+                                        React.createElement('td', { className: 'px-3 sm:px-4 py-3 text-center' },
+                                            React.createElement('div', { className: `inline-block rounded-lg px-2 sm:px-3 py-1 text-xs sm:text-sm font-bold border ${getDipScoreColor(asset.dipScore)}` }, asset.dipScore)
+                                        )
+                                    )
+                                )
+                            )
+                        )
+                    ) : React.createElement(
+                        'div',
+                        { className: 'text-center py-12 bg-slate-900/50 rounded-lg border border-slate-700' },
+                        React.createElement('p', { className: 'text-slate-400 mb-3' }, 'No data loaded yet'),
+                        React.createElement(
+                            'button',
+                            {
+                                onClick: handleUpdate,
+                                className: 'px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg font-semibold text-sm transition-colors'
+                            },
+                            'Click to Fetch Live Data'
+                        )
+                    ),
+
+                    // Info
+                    React.createElement(
+                        'div',
+                        { className: 'mt-8 bg-slate-800/50 rounded-lg p-4 border border-slate-700' },
+                        React.createElement('p', { className: 'text-slate-300 text-sm' },
+                            React.createElement('strong', null, '💡 How it works: '),
+                            'Click the Update button to fetch real market data directly in your browser. No backend needed!'
+                        )
+                    )
+                )
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(React.createElement(DipBuyDashboard));
+    </script>
+</body>
+</html>
