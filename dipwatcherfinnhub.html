@@ -32,6 +32,13 @@ const FINNHUB_API_KEY = "d90f5mhr01qk8bflc40gd90f5mhr01qk8bflc410";
    SYMBOLS TO TRACK
 ========================= */
 const SYMBOLS = {
+    indexes: [
+        "^GSPC",  // S&P 500
+        "^NDX",   // NASDAQ 100
+        "^N225",  // Nikkei 225
+        "^HSI",   // Hang Seng
+        "000300.SS" // CSI 300 (China)
+    ],
     stocks: [
         "AAPL", "MSFT", "GOOGL", "AMZN", "TSLA",
         "META", "NVDA", "AMD", "ADBE", "NFLX"
@@ -42,6 +49,38 @@ const SYMBOLS = {
     crypto: [
         "bitcoin", "ethereum", "cardano", "solana", "ripple"
     ]
+};
+
+/* =========================
+   READABLE NAMES MAPPING
+========================= */
+const NAMES = {
+    "^GSPC": "S&P 500",
+    "^NDX": "NASDAQ 100",
+    "^N225": "Nikkei 225",
+    "^HSI": "Hang Seng 50",
+    "000300.SS": "CSI 300 (China)",
+    "AAPL": "Apple Inc.",
+    "MSFT": "Microsoft",
+    "GOOGL": "Alphabet",
+    "AMZN": "Amazon",
+    "TSLA": "Tesla",
+    "META": "Meta Platforms",
+    "NVDA": "NVIDIA",
+    "AMD": "AMD",
+    "ADBE": "Adobe",
+    "NFLX": "Netflix",
+    "SPY": "S&P 500 ETF",
+    "QQQ": "NASDAQ 100 ETF",
+    "VOO": "Vanguard S&P 500",
+    "IWM": "Russell 2000",
+    "EEM": "MSCI Emerging Markets",
+    "GLD": "Gold",
+    "bitcoin": "Bitcoin",
+    "ethereum": "Ethereum",
+    "cardano": "Cardano",
+    "solana": "Solana",
+    "ripple": "XRP"
 };
 
 /* =========================
@@ -237,6 +276,7 @@ function DipBuyDashboard() {
         const allAssets = [];
 
         const allSymbols = [
+            ...SYMBOLS.indexes.map(s => ({ symbol: s, type: 'index' })),
             ...SYMBOLS.stocks.map(s => ({ symbol: s, type: 'stock' })),
             ...SYMBOLS.etfs.map(s => ({ symbol: s, type: 'etf' })),
             ...SYMBOLS.crypto.map(s => ({ symbol: s, type: 'crypto' }))
@@ -244,12 +284,13 @@ function DipBuyDashboard() {
 
         let current = 0;
 
-        // Fetch stocks and ETFs
+        // Fetch stocks, ETFs, and indexes
         for (const item of allSymbols.filter(x => x.type !== 'crypto')) {
             setProgress(`Fetching ${item.symbol}... (${current}/${allSymbols.length})`);
             const data = await fetchStockData(item.symbol);
             if (data) {
                 data.type = item.type;
+                data.readableName = NAMES[item.symbol] || item.symbol;
                 allAssets.push(data);
             }
             current++;
@@ -261,6 +302,7 @@ function DipBuyDashboard() {
             setProgress(`Fetching ${item.symbol}... (${current}/${allSymbols.length})`);
             const data = await fetchCryptoData(item.symbol);
             if (data) {
+                data.readableName = NAMES[item.symbol] || data.name;
                 allAssets.push(data);
             }
             current++;
@@ -364,7 +406,7 @@ function DipBuyDashboard() {
 
             /* FILTERS */
             React.createElement("div", { className: "mb-6 flex gap-2 flex-wrap" },
-                ['all', 'stock', 'etf', 'crypto'].map((type) =>
+                ['all', 'index', 'stock', 'etf', 'crypto'].map((type) =>
                     React.createElement("button", {
                         key: type,
                         onClick: () => setFilterType(type),
@@ -374,7 +416,7 @@ function DipBuyDashboard() {
                                 : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
                         }`
                     },
-                        type === 'all' ? 'All Assets' : type.charAt(0).toUpperCase() + type.slice(1)
+                        type === 'all' ? 'All Assets' : type.charAt(0).toUpperCase() + type.slice(1) + 's'
                     )
                 )
             ),
@@ -384,7 +426,8 @@ function DipBuyDashboard() {
                 React.createElement("table", { className: "w-full text-sm" },
                     React.createElement("thead", null,
                         React.createElement("tr", { className: "border-b border-slate-700 bg-slate-800" },
-                            React.createElement("th", { className: "px-4 py-3 text-left text-slate-300 font-semibold cursor-pointer hover:text-white", onClick: () => setSortConfig({ key: 'name', direction: 'desc' }) }, "Asset"),
+                            React.createElement("th", { className: "px-4 py-3 text-left text-slate-300 font-semibold cursor-pointer hover:text-white", onClick: () => setSortConfig({ key: 'symbol', direction: 'desc' }) }, "Ticker"),
+                            React.createElement("th", { className: "px-4 py-3 text-left text-slate-300 font-semibold cursor-pointer hover:text-white", onClick: () => setSortConfig({ key: 'readableName', direction: 'desc' }) }, "Name"),
                             React.createElement("th", { className: "px-4 py-3 text-right text-slate-300 font-semibold cursor-pointer hover:text-white", onClick: () => setSortConfig({ key: 'currentPrice', direction: 'desc' }) }, "Price"),
                             React.createElement("th", { className: "px-4 py-3 text-right text-slate-300 font-semibold cursor-pointer hover:text-white", onClick: () => setSortConfig({ key: 'priceChange24h', direction: 'asc' }) }, "24h Change"),
                             React.createElement("th", { className: "px-4 py-3 text-center text-slate-300 font-semibold cursor-pointer hover:text-white", onClick: () => setSortConfig({ key: 'rsi', direction: 'asc' }) }, "RSI"),
@@ -398,11 +441,11 @@ function DipBuyDashboard() {
                                 key: asset.id,
                                 className: "border-b border-slate-700/50 hover:bg-slate-700/30 transition-colors"
                             },
-                                React.createElement("td", { className: "px-4 py-3" },
-                                    React.createElement("div", null,
-                                        React.createElement("div", { className: "font-semibold text-white" }, asset.name),
-                                        React.createElement("div", { className: "text-xs text-slate-400" }, asset.type)
-                                    )
+                                React.createElement("td", { className: "px-4 py-3 font-semibold text-white" },
+                                    asset.symbol
+                                ),
+                                React.createElement("td", { className: "px-4 py-3 text-slate-300" },
+                                    asset.readableName || asset.name
                                 ),
                                 React.createElement("td", { className: "px-4 py-3 text-right text-white font-mono" },
                                     "$" + asset.currentPrice.toLocaleString(undefined, { maximumFractionDigits: 2, minimumFractionDigits: 2 })
