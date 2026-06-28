@@ -46,8 +46,51 @@
             const fetchStockData = async (symbol) => {
                 try {
                     const response = await fetch(
-                        `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${symbol}?modules=price,defaultKeyStatistics`
+                        `https://cors-anywhere.herokuapp.com/https://query1.finance.yahoo.com/v10/finance/quoteSummary/${symbol}?modules=price,defaultKeyStatistics`
                     );
+                    
+                    if (!response.ok) {
+                        // Fallback to alternative endpoint
+                        const fallback = await fetch(
+                            `https://query2.finance.yahoo.com/v10/finance/quoteSummary/${symbol}?modules=price,defaultKeyStatistics`
+                        );
+                        if (!fallback.ok) return null;
+                        const data = await fallback.json();
+                        
+                        if (!data.quoteSummary?.result?.[0]) {
+                            return null;
+                        }
+
+                        const result = data.quoteSummary.result[0];
+                        const priceData = result.price;
+
+                        if (!priceData?.regularMarketPrice?.raw) {
+                            return null;
+                        }
+
+                        const currentPrice = priceData.regularMarketPrice.raw;
+                        const previousClose = priceData.regularMarketPreviousClose?.raw || currentPrice;
+                        const priceChange24h = ((currentPrice - previousClose) / previousClose) * 100;
+
+                        return {
+                            id: symbol,
+                            name: symbol,
+                            symbol,
+                            type: 'stock',
+                            currentPrice,
+                            priceChange24h,
+                            price52WkHigh: priceData.fiftyTwoWeekHigh?.raw || currentPrice,
+                            price52WkLow: priceData.fiftyTwoWeekLow?.raw || currentPrice,
+                            ma200Day: null,
+                            rsi: 50 + (priceChange24h * 2),
+                            volume24h: priceData.regularMarketVolume?.raw || 0,
+                            volumeMA20Day: (priceData.regularMarketVolume?.raw || 0) * 0.85,
+                            pe: result.defaultKeyStatistics?.trailingPE?.raw || null,
+                            dividendYield: (result.defaultKeyStatistics?.trailingAnnualDividendYield?.raw || 0) * 100,
+                            fetchedAt: new Date(),
+                        };
+                    }
+                    
                     const data = await response.json();
 
                     if (!data.quoteSummary?.result?.[0]) {
@@ -140,36 +183,77 @@
                 setProgress('');
                 const allAssets = [];
 
-                const stocks = ['AAPL', 'MSFT', 'GOOGL', 'TSLA', 'META', 'NVDA'];
-                const etfs = ['SPY', 'QQQ', 'VOO'];
-                const crypto = ['bitcoin', 'ethereum', 'cardano', 'solana'];
+                // US Tech Giants
+                const usTech = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA', 'AMD', 'INTEL', 'ADBE', 'CRM', 'NFLX', 'SNPS', 'ASML', 'QCOM'];
+                
+                // Global Tech Companies
+                const globalTech = ['ASML', 'BABA', 'TENCENT', 'SAMSUNG', 'SAP', 'INFY', 'ANGL'];
+                
+                // US Indexes
+                const usIndexes = ['SPY', 'QQQ', 'VOO', 'IWM', 'XLV', 'XLK', 'XLC', 'XLE', 'XLF'];
+                
+                // International Indexes
+                const intlIndexes = ['EWU', 'EWG', 'EWJ', 'EWA', 'ASHR', 'FXI', 'INDL'];
+                
+                // Cryptocurrencies
+                const crypto = ['bitcoin', 'ethereum', 'cardano', 'solana', 'ripple', 'polkadot', 'dogecoin', 'litecoin', 'uniswap', 'chainlink', 'avalanche-2', 'polygon', 'arbitrum', 'optimism', 'stellar', 'monero', 'zcash'];
 
-                let total = stocks.length + etfs.length + crypto.length;
+                let total = usTech.length + globalTech.length + usIndexes.length + intlIndexes.length + crypto.length;
                 let current = 0;
 
-                for (const symbol of stocks) {
+                // Fetch US Tech
+                for (const symbol of usTech) {
                     setProgress(`Fetching ${symbol}...`);
                     const data = await fetchStockData(symbol);
                     if (data) {
+                        data.type = 'stock';
                         allAssets.push(data);
                     }
                     current++;
                     setProgress(`${current}/${total} assets loaded...`);
-                    await new Promise(resolve => setTimeout(resolve, 300));
+                    await new Promise(resolve => setTimeout(resolve, 200));
                 }
 
-                for (const symbol of etfs) {
+                // Fetch Global Tech
+                for (const symbol of globalTech) {
                     setProgress(`Fetching ${symbol}...`);
                     const data = await fetchStockData(symbol);
                     if (data) {
-                        data.type = 'etf';
+                        data.type = 'stock';
                         allAssets.push(data);
                     }
                     current++;
                     setProgress(`${current}/${total} assets loaded...`);
-                    await new Promise(resolve => setTimeout(resolve, 300));
+                    await new Promise(resolve => setTimeout(resolve, 200));
                 }
 
+                // Fetch US Indexes
+                for (const symbol of usIndexes) {
+                    setProgress(`Fetching ${symbol}...`);
+                    const data = await fetchStockData(symbol);
+                    if (data) {
+                        data.type = 'index';
+                        allAssets.push(data);
+                    }
+                    current++;
+                    setProgress(`${current}/${total} assets loaded...`);
+                    await new Promise(resolve => setTimeout(resolve, 200));
+                }
+
+                // Fetch International Indexes
+                for (const symbol of intlIndexes) {
+                    setProgress(`Fetching ${symbol}...`);
+                    const data = await fetchStockData(symbol);
+                    if (data) {
+                        data.type = 'index';
+                        allAssets.push(data);
+                    }
+                    current++;
+                    setProgress(`${current}/${total} assets loaded...`);
+                    await new Promise(resolve => setTimeout(resolve, 200));
+                }
+
+                // Fetch Crypto
                 for (const coinId of crypto) {
                     setProgress(`Fetching ${coinId}...`);
                     const data = await fetchCryptoData(coinId);
@@ -364,7 +448,7 @@
                         [
                             { value: 'all', label: 'All Assets' },
                             { value: 'stock', label: 'Stocks' },
-                            { value: 'etf', label: 'ETFs' },
+                            { value: 'index', label: 'Indexes' },
                             { value: 'crypto', label: 'Crypto' },
                         ].map((type) =>
                             React.createElement(
