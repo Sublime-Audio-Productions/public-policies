@@ -41,13 +41,16 @@ const SYMBOLS = {
     ],
     stocks: [
         "AAPL", "MSFT", "GOOGL", "AMZN", "TSLA",
-        "META", "NVDA", "AMD", "ADBE", "NFLX"
+        "META", "NVDA", "AMD", "ADBE", "NFLX",
+        "CRM", "ASML", "INTC", "QCOM", "AVGO"
     ],
     etfs: [
-        "SPY", "QQQ", "VOO", "IWM", "EEM", "GLD"
+        "SPY", "QQQ", "VOO", "IWM", "EEM", "GLD",
+        "XLK", "XLF", "XLE", "XLV"
     ],
     crypto: [
-        "bitcoin", "ethereum", "cardano", "solana", "ripple"
+        "bitcoin", "ethereum", "cardano", "solana", "ripple",
+        "dogecoin", "polkadot", "litecoin"
     ]
 };
 
@@ -70,17 +73,29 @@ const NAMES = {
     "AMD": "AMD",
     "ADBE": "Adobe",
     "NFLX": "Netflix",
+    "CRM": "Salesforce",
+    "ASML": "ASML",
+    "INTC": "Intel",
+    "QCOM": "Qualcomm",
+    "AVGO": "Broadcom",
     "SPY": "S&P 500 ETF",
     "QQQ": "NASDAQ 100 ETF",
     "VOO": "Vanguard S&P 500",
     "IWM": "Russell 2000",
     "EEM": "MSCI Emerging Markets",
     "GLD": "Gold",
+    "XLK": "Technology Select",
+    "XLF": "Financial Select",
+    "XLE": "Energy Select",
+    "XLV": "Healthcare Select",
     "bitcoin": "Bitcoin",
     "ethereum": "Ethereum",
     "cardano": "Cardano",
     "solana": "Solana",
-    "ripple": "XRP"
+    "ripple": "XRP",
+    "dogecoin": "Dogecoin",
+    "polkadot": "Polkadot",
+    "litecoin": "Litecoin"
 };
 
 /* =========================
@@ -126,12 +141,17 @@ const fetchStockData = async (symbol) => {
         const previousClose = quote.pc || currentPrice;
         const change24h = ((currentPrice - previousClose) / previousClose) * 100;
 
-        // Estimate RSI based on price change
+        // Estimate RSI based on price change (more realistic range)
         let rsi = 50;
-        if (change24h < -6) rsi = 25;
-        else if (change24h < -4) rsi = 32;
-        else if (change24h < -2) rsi = 38;
-        else if (change24h > 6) rsi = 75;
+        if (change24h < -10) rsi = 20;
+        else if (change24h < -8) rsi = 25;
+        else if (change24h < -6) rsi = 30;
+        else if (change24h < -4) rsi = 35;
+        else if (change24h < -2) rsi = 40;
+        else if (change24h < 0) rsi = 45;
+        else if (change24h < 2) rsi = 55;
+        else if (change24h < 4) rsi = 60;
+        else if (change24h > 10) rsi = 80;
 
         return {
             id: symbol,
@@ -141,7 +161,7 @@ const fetchStockData = async (symbol) => {
             currentPrice,
             priceChange24h: change24h,
             volume24h: quote.v || 0,
-            volumeMA20Day: (quote.v || 0) * 0.85,
+            volumeMA20Day: Math.max((quote.v || 0) * 0.85, 1),
             rsi,
             ma200Day: null,
             pe: null,
@@ -205,44 +225,51 @@ const fetchCryptoData = async (coinId) => {
 };
 
 /* =========================
-   CALCULATE DIP SCORE
+   CALCULATE DIP SCORE (IMPROVED)
 ========================= */
 const calculateDipScore = (asset) => {
     let score = 0;
 
-    // RSI Signal (0-25 points)
-    if (asset.rsi < 25) score += 25;
+    // Price momentum is primary indicator (0-40 points)
+    // Down moves indicate potential dips
+    if (asset.priceChange24h < -10) score += 40;
+    else if (asset.priceChange24h < -8) score += 35;
+    else if (asset.priceChange24h < -6) score += 30;
+    else if (asset.priceChange24h < -4) score += 25;
+    else if (asset.priceChange24h < -2) score += 18;
+    else if (asset.priceChange24h < 0) score += 10;
+    else if (asset.priceChange24h < 2) score += 5;
+
+    // RSI Signal (0-30 points) - Oversold is key
+    if (asset.rsi < 20) score += 30;
+    else if (asset.rsi < 25) score += 25;
     else if (asset.rsi < 30) score += 20;
-    else if (asset.rsi < 35) score += 10;
+    else if (asset.rsi < 35) score += 15;
+    else if (asset.rsi < 40) score += 10;
+    else if (asset.rsi > 70) score -= 10; // Overbought reduces score
 
-    // Price momentum (0-20 points)
-    if (asset.priceChange24h < -6) score += 20;
-    else if (asset.priceChange24h < -4) score += 15;
-    else if (asset.priceChange24h < -2) score += 8;
-
-    // Volume surge (0-20 points)
+    // Volume surge (0-20 points) - Panic selling shows conviction
     if (asset.volumeMA20Day > 0) {
         const volumeRatio = asset.volume24h / asset.volumeMA20Day;
-        if (volumeRatio > 1.8 && asset.priceChange24h < -3) score += 20;
-        else if (volumeRatio > 1.5 && asset.priceChange24h < -2) score += 15;
-        else if (volumeRatio > 1.2 && asset.priceChange24h < -1) score += 10;
+        if (volumeRatio > 2.5) score += 20;
+        else if (volumeRatio > 2.0) score += 18;
+        else if (volumeRatio > 1.8) score += 16;
+        else if (volumeRatio > 1.5) score += 12;
+        else if (volumeRatio > 1.2) score += 8;
+        else if (volumeRatio > 1.0) score += 3;
     }
 
-    // Valuation (0-20 points)
+    // Valuation bonus (0-10 points) - Low PE is attractive
     if (asset.pe && asset.pe > 0) {
-        if (asset.pe < 18) score += 20;
-        else if (asset.pe < 22) score += 15;
-        else if (asset.pe < 28) score += 10;
+        if (asset.pe < 12) score += 10;
+        else if (asset.pe < 15) score += 8;
+        else if (asset.pe < 18) score += 6;
+        else if (asset.pe < 22) score += 4;
+        else if (asset.pe > 40) score -= 5; // Very expensive gets penalty
     }
 
-    // Dividend yield bonus (0-15 points)
-    if (asset.dividendYield > 0) {
-        if (asset.dividendYield > 3) score += 15;
-        else if (asset.dividendYield > 2) score += 10;
-        else if (asset.dividendYield > 1) score += 5;
-    }
-
-    return Math.min(100, score);
+    // Return to realistic range (0-100)
+    return Math.max(0, Math.min(100, score));
 };
 
 /* =========================
@@ -274,6 +301,7 @@ function DipBuyDashboard() {
         setLoading(true);
         setProgress("");
         const allAssets = [];
+        let failed = [];
 
         const allSymbols = [
             ...SYMBOLS.indexes.map(s => ({ symbol: s, type: 'index' })),
@@ -283,27 +311,32 @@ function DipBuyDashboard() {
         ];
 
         let current = 0;
+        const total = allSymbols.length;
 
         // Fetch stocks, ETFs, and indexes
         for (const item of allSymbols.filter(x => x.type !== 'crypto')) {
-            setProgress(`Fetching ${item.symbol}... (${current}/${allSymbols.length})`);
+            setProgress(`Fetching... (${current + 1}/${total}) ${item.symbol}`);
             const data = await fetchStockData(item.symbol);
             if (data) {
                 data.type = item.type;
                 data.readableName = NAMES[item.symbol] || item.symbol;
                 allAssets.push(data);
+            } else {
+                failed.push(item.symbol);
             }
             current++;
-            await new Promise(resolve => setTimeout(resolve, 300));
+            await new Promise(resolve => setTimeout(resolve, 250));
         }
 
         // Fetch crypto
         for (const item of allSymbols.filter(x => x.type === 'crypto')) {
-            setProgress(`Fetching ${item.symbol}... (${current}/${allSymbols.length})`);
+            setProgress(`Fetching... (${current + 1}/${total}) ${item.symbol}`);
             const data = await fetchCryptoData(item.symbol);
             if (data) {
                 data.readableName = NAMES[item.symbol] || data.name;
                 allAssets.push(data);
+            } else {
+                failed.push(item.symbol);
             }
             current++;
             await new Promise(resolve => setTimeout(resolve, 100));
@@ -316,8 +349,12 @@ function DipBuyDashboard() {
         }
 
         setLoading(false);
-        setProgress(`✅ Updated ${allAssets.length} assets`);
-        setTimeout(() => setProgress(""), 3000);
+        let msg = `✅ Updated ${allAssets.length}/${total} assets`;
+        if (failed.length > 0) {
+            msg += ` (Failed: ${failed.join(", ")})`;
+        }
+        setProgress(msg);
+        setTimeout(() => setProgress(""), 5000);
     };
 
     const assetsWithScores = useMemo(() => {
