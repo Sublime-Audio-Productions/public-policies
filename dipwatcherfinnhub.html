@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dip Buy Scanner (Finnhub)</title>
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+
+    <style>
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .animate-spin { animation: spin 1s linear infinite; }
+    </style>
+</head>
+
+<body>
+<div id="root"></div>
+
+<script>
+const { useState, useEffect, useMemo } = React;
+
+/* =========================
+   CONFIG
+========================= */
+const FINNHUB_API_KEY = "d90f5mhr01qk8bflc40gd90f5mhr01qk8bflc410";
+
+/* =========================
+   SYMBOLS (FIXED)
+========================= */
+const SYMBOLS = {
+    stocks: [
+        "AAPL","MSFT","GOOGL","AMZN","TSLA",
+        "META","NVDA","AMD","INTC","ADBE",
+        "CRM","NFLX","ASML","QCOM"
+    ],
+
+    etfs: [
+        "SPY","QQQ","VOO","IWM","XLK","XLF","XLE","XLV"
+    ],
+
+    intl: [
+        "0700.HK",   // Tencent
+        "005930.KS", // Samsung
+        "SAP"
+    ]
+};
+
+/* =========================
+   FETCH STOCK DATA (FINNHUB)
+========================= */
+const fetchStockData = async (symbol) => {
+    try {
+        const quoteRes = await fetch(
+            `https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${FINNHUB_API_KEY}`
+        );
+
+        const quote = await quoteRes.json();
+
+        if (!quote || !quote.c) return null;
+
+        const currentPrice = quote.c;
+        const previousClose = quote.pc;
+
+        const change24h =
+            previousClose ? ((currentPrice - previousClose) / previousClose) * 100 : 0;
+
+        return {
+            id: symbol,
+            symbol,
+            name: symbol,
+            type: "stock",
+
+            currentPrice,
+            priceChange24h: change24h,
+
+            volume24h: quote.v || 0,
+
+            pe: null,
+            dividendYield: 0,
+
+            price52WkHigh: null,
+            price52WkLow: null,
+
+            rsi: null,
+            volumeMA20Day: null,
+
+            fetchedAt: new Date()
+        };
+
+    } catch (e) {
+        console.error(symbol, e);
+        return null;
+    }
+};
+
+/* =========================
+   DIP SCORE (SIMPLIFIED BUT REAL)
+========================= */
+const calculateDipScore = (a) => {
+    let score = 0;
+
+    if (a.priceChange24h < -6) score += 25;
+    else if (a.priceChange24h < -4) score += 15;
+    else if (a.priceChange24h < -2) score += 8;
+
+    if (a.priceChange24h < 0) score += 10;
+
+    if (a.pe && a.pe < 20) score += 15;
+
+    return Math.min(100, score);
+};
+
+/* =========================
+   APP
+========================= */
+function App() {
+    const [assets, setAssets] = useState([]);
+    const [loading, setLoading] = useState(false);
+    const [progress, setProgress] = useState("");
+
+    const allSymbols = [
+        ...SYMBOLS.stocks,
+        ...SYMBOLS.etfs,
+        ...SYMBOLS.intl
+    ];
+
+    const handleUpdate = async () => {
+        setLoading(true);
+        setProgress("Fetching market data...");
+
+        const results = await Promise.all(
+            allSymbols.map(fetchStockData)
+        );
+
+        const cleaned = results
+            .filter(Boolean)
+            .map(a => ({
+                ...a,
+                dipScore: calculateDipScore(a)
+            }))
+            .sort((a, b) => b.dipScore - a.dipScore);
+
+        setAssets(cleaned);
+        setLoading(false);
+        setProgress(`Loaded ${cleaned.length} assets`);
+    };
+
+    return (
+        React.createElement("div", {
+            className: "min-h-screen bg-slate-950 text-white p-6"
+        },
+
+        React.createElement("div", { className: "max-w-5xl mx-auto" },
+
+            /* HEADER */
+            React.createElement("h1", {
+                className: "text-3xl font-bold mb-4"
+            }, "Dip Buy Scanner (Finnhub)"),
+
+            React.createElement("button", {
+                onClick: handleUpdate,
+                disabled: loading,
+                className:
+                    "bg-emerald-500 px-4 py-2 rounded mb-4"
+            }, loading ? "Loading..." : "Fetch Data"),
+
+            progress && React.createElement("p", {
+                className: "text-slate-400 mb-4"
+            }, progress),
+
+            /* TABLE */
+            React.createElement("table", {
+                className: "w-full text-sm"
+            },
+
+                React.createElement("thead", null,
+                    React.createElement("tr", null,
+                        ["Asset","Price","24h %","Score"].map(h =>
+                            React.createElement("th", {
+                                className: "text-left p-2"
+                            }, h)
+                        )
+                    )
+                ),
+
+                React.createElement("tbody", null,
+                    assets.map(a =>
+                        React.createElement("tr", {
+                            key: a.id,
+                            className: "border-t border-slate-800"
+                        },
+
+                            React.createElement("td", { className: "p-2" }, a.symbol),
+
+                            React.createElement("td", { className: "p-2" },
+                                "$" + a.currentPrice.toFixed(2)
+                            ),
+
+                            React.createElement("td", {
+                                className: "p-2",
+                                style: { color: a.priceChange24h < 0 ? "red" : "green" }
+                            }, a.priceChange24h.toFixed(2) + "%"),
+
+                            React.createElement("td", { className: "p-2" }, a.dipScore)
+                        )
+                    )
+                )
+            )
+        ))
+    );
+}
+
+ReactDOM.createRoot(document.getElementById("root"))
+    .render(React.createElement(App));
+</script>
+
+</body>
+</html>
