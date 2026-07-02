@@ -33,11 +33,11 @@ const FINNHUB_API_KEY = "d90f5mhr01qk8bflc40gd90f5mhr01qk8bflc410";
 ========================= */
 const SYMBOLS = {
     indexes: [
-        "SPY",    // S&P 500 ETF (alternative to ^GSPC)
-        "QQQ",    // NASDAQ 100 ETF (alternative to ^NDX)
-        "EWJ",    // Japan (alternative to ^N225)
-        "EWH",    // Hong Kong (alternative to ^HSI)
-        "VXUS"    // International (alternative to 000300.SS)
+        "SPY",      // S&P 500
+        "QQQ",      // NASDAQ 100
+        "EWJ",      // Nikkei 225 (Japan)
+        "EWH",      // Hang Seng 50 (Hong Kong)
+        "FXI"       // China 50 Index
     ],
     stocks: [
         "AAPL", "MSFT", "GOOGL", "AMZN", "TSLA",
@@ -47,6 +47,20 @@ const SYMBOLS = {
     etfs: [
         "IVV", "VOO", "VTI", "IWM", "EEM", "GLD",
         "XLK", "XLF", "XLE", "XLV"
+    ],
+    commodities: [
+        "USO",      // Oil
+        "UNG",      // Natural Gas
+        "DBC"       // Commodities (includes cocoa)
+    ],
+    leveraged: [
+        "FAS",      // 3x Financials
+        "NAIL",     // 3x Homebuilders
+        "DPST",     // 3x Inverse Tech
+        "KOLD",     // 3x Inverse Natural Gas
+        "BLOK",     // Blockchain
+        "TECL",     // 3x Leveraged Tech
+        "TQQQ"      // 3x Leveraged NASDAQ-100
     ],
     crypto: [
         "bitcoin", "ethereum", "cardano", "solana", "ripple",
@@ -58,11 +72,14 @@ const SYMBOLS = {
    READABLE NAMES MAPPING
 ========================= */
 const NAMES = {
+    // Global Indexes
     "SPY": "S&P 500",
     "QQQ": "NASDAQ 100",
-    "EWJ": "Japan (Nikkei)",
-    "EWH": "Hong Kong",
-    "VXUS": "International Stocks",
+    "EWJ": "Nikkei 225 (Japan)",
+    "EWH": "Hang Seng 50 (Hong Kong)",
+    "FXI": "China 50 Index",
+    
+    // Stocks
     "AAPL": "Apple Inc.",
     "MSFT": "Microsoft",
     "GOOGL": "Alphabet",
@@ -78,6 +95,8 @@ const NAMES = {
     "QCOM": "Qualcomm",
     "AVGO": "Broadcom",
     "PYPL": "PayPal",
+    
+    // Regular ETFs
     "IVV": "iShares Core S&P 500",
     "VOO": "Vanguard S&P 500",
     "VTI": "Total US Stock",
@@ -88,6 +107,22 @@ const NAMES = {
     "XLF": "Financial Select",
     "XLE": "Energy Select",
     "XLV": "Healthcare Select",
+    
+    // Commodities
+    "USO": "Oil (Crude)",
+    "UNG": "Natural Gas",
+    "DBC": "Commodities Bundle",
+    
+    // Leveraged/Inverse ETFs
+    "FAS": "3x Financials (Bullish)",
+    "NAIL": "3x Homebuilders (Bullish)",
+    "DPST": "3x Tech Inverse (Bearish)",
+    "KOLD": "3x Gas Inverse (Bearish)",
+    "BLOK": "Blockchain ETF",
+    "TECL": "3x Tech Leverage (Bullish)",
+    "TQQQ": "3x NASDAQ Leverage (Bullish)",
+    
+    // Crypto
     "bitcoin": "Bitcoin",
     "ethereum": "Ethereum",
     "cardano": "Cardano",
@@ -282,6 +317,9 @@ function DipBuyDashboard() {
     const [lastUpdate, setLastUpdate] = useState(null);
     const [sortConfig, setSortConfig] = useState({ key: 'dipScore', direction: 'desc' });
     const [filterType, setFilterType] = useState('all');
+    const [customTickers, setCustomTickers] = useState([]);
+    const [newTickerInput, setNewTickerInput] = useState("");
+    const [newTickerType, setNewTickerType] = useState("stock");
 
     // Load cached data on mount
     useEffect(() => {
@@ -297,6 +335,32 @@ function DipBuyDashboard() {
         }
     }, []);
 
+    const handleAddTicker = () => {
+        if (!newTickerInput.trim()) return;
+        
+        const ticker = newTickerInput.trim().toUpperCase();
+        
+        // Check if already exists
+        if (customTickers.some(t => t.symbol === ticker)) {
+            alert(`${ticker} is already being tracked!`);
+            setNewTickerInput("");
+            return;
+        }
+        
+        const newTicker = {
+            symbol: ticker,
+            type: newTickerType,
+            readableName: NAMES[ticker] || ticker
+        };
+        
+        setCustomTickers([...customTickers, newTicker]);
+        setNewTickerInput("");
+    };
+
+    const handleRemoveTicker = (symbol) => {
+        setCustomTickers(customTickers.filter(t => t.symbol !== symbol));
+    };
+
     const handleUpdate = async () => {
         setLoading(true);
         setProgress("");
@@ -307,7 +371,10 @@ function DipBuyDashboard() {
             ...SYMBOLS.indexes.map(s => ({ symbol: s, type: 'index' })),
             ...SYMBOLS.stocks.map(s => ({ symbol: s, type: 'stock' })),
             ...SYMBOLS.etfs.map(s => ({ symbol: s, type: 'etf' })),
-            ...SYMBOLS.crypto.map(s => ({ symbol: s, type: 'crypto' }))
+            ...SYMBOLS.commodities.map(s => ({ symbol: s, type: 'commodity' })),
+            ...SYMBOLS.leveraged.map(s => ({ symbol: s, type: 'leveraged' })),
+            ...SYMBOLS.crypto.map(s => ({ symbol: s, type: 'crypto' })),
+            ...customTickers.map(s => ({ symbol: s.symbol, type: s.type }))
         ];
 
         let current = 0;
@@ -416,7 +483,7 @@ function DipBuyDashboard() {
                     ),
                     React.createElement("h1", { className: "text-4xl font-bold text-white" }, "Dip Buy Scanner")
                 ),
-                React.createElement("p", { className: "text-slate-400 text-lg" }, "Real-time analysis of stocks, ETFs, and crypto")
+                React.createElement("p", { className: "text-slate-400 text-lg" }, "Real-time analysis of stocks, ETFs, commodities, leveraged ETFs, and crypto • Add custom tickers anytime")
             ),
 
             /* STATUS */
@@ -441,9 +508,61 @@ function DipBuyDashboard() {
                 )
             ),
 
+            /* ADD CUSTOM TICKER */
+            React.createElement("div", { className: "mb-6 p-4 bg-slate-800/50 border border-slate-700 rounded-lg" },
+                React.createElement("div", { className: "flex gap-3 flex-wrap items-end" },
+                    React.createElement("div", null,
+                        React.createElement("label", { className: "block text-sm text-slate-300 mb-2" }, "Ticker Symbol"),
+                        React.createElement("input", {
+                            type: "text",
+                            value: newTickerInput,
+                            onChange: (e) => setNewTickerInput(e.target.value.toUpperCase()),
+                            onKeyPress: (e) => e.key === 'Enter' && handleAddTicker(),
+                            placeholder: "e.g., TSLA, BTC, GLD",
+                            className: "px-3 py-2 bg-slate-700 text-white rounded border border-slate-600 focus:outline-none focus:border-emerald-500 w-32"
+                        })
+                    ),
+                    React.createElement("div", null,
+                        React.createElement("label", { className: "block text-sm text-slate-300 mb-2" }, "Type"),
+                        React.createElement("select", {
+                            value: newTickerType,
+                            onChange: (e) => setNewTickerType(e.target.value),
+                            className: "px-3 py-2 bg-slate-700 text-white rounded border border-slate-600 focus:outline-none focus:border-emerald-500"
+                        },
+                            React.createElement("option", { value: "stock" }, "Stock"),
+                            React.createElement("option", { value: "etf" }, "ETF"),
+                            React.createElement("option", { value: "commodity" }, "Commodity"),
+                            React.createElement("option", { value: "leveraged" }, "Leveraged"),
+                            React.createElement("option", { value: "crypto" }, "Crypto")
+                        )
+                    ),
+                    React.createElement("button", {
+                        onClick: handleAddTicker,
+                        className: "px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded font-medium transition-all"
+                    }, "+ Add Ticker")
+                ),
+                React.createElement("div", { className: "mt-4 flex flex-wrap gap-2" },
+                    customTickers.length > 0 && React.createElement("div", null,
+                        React.createElement("p", { className: "text-sm text-slate-400 mb-2" }, `Custom Tickers (${customTickers.length}):`),
+                        customTickers.map((ticker) =>
+                            React.createElement("span", {
+                                key: ticker.symbol,
+                                className: "inline-flex items-center gap-2 px-3 py-1 bg-blue-900/50 border border-blue-700 text-blue-300 rounded-full text-sm"
+                            },
+                                ticker.symbol,
+                                React.createElement("button", {
+                                    onClick: () => handleRemoveTicker(ticker.symbol),
+                                    className: "ml-1 font-bold hover:text-blue-100 cursor-pointer"
+                                }, "×")
+                            )
+                        )
+                    )
+                )
+            ),
+
             /* FILTERS */
             React.createElement("div", { className: "mb-6 flex gap-2 flex-wrap" },
-                ['all', 'index', 'stock', 'etf', 'crypto'].map((type) =>
+                ['all', 'index', 'stock', 'etf', 'commodity', 'leveraged', 'crypto'].map((type) =>
                     React.createElement("button", {
                         key: type,
                         onClick: () => setFilterType(type),
@@ -517,7 +636,7 @@ function DipBuyDashboard() {
             React.createElement("div", { className: "mt-8 bg-slate-700/50 border border-slate-600 rounded-lg p-4" },
                 React.createElement("div", { className: "text-sm text-slate-300" },
                     React.createElement("strong", null, "How it works: "),
-                    "Click 'Update Data' to fetch real market prices from Finnhub (stocks/ETFs) and CoinGecko (crypto). All data is processed in your browser and cached locally."
+                    "Click 'Update Data' to fetch real market prices from Finnhub (stocks, ETFs, commodities, leveraged) and CoinGecko (crypto). All data is processed in your browser and cached locally."
                 )
             )
         )
