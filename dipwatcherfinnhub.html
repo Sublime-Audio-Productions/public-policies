@@ -319,6 +319,7 @@ function DipBuyDashboard() {
     const [filterType, setFilterType] = useState('all');
     const [customTickers, setCustomTickers] = useState([]);
     const [newTickerInput, setNewTickerInput] = useState("");
+    const [newTickerName, setNewTickerName] = useState("");
     const [newTickerType, setNewTickerType] = useState("stock");
 
     // Load cached data on mount
@@ -350,11 +351,12 @@ function DipBuyDashboard() {
         const newTicker = {
             symbol: ticker,
             type: newTickerType,
-            readableName: NAMES[ticker] || ticker
+            readableName: newTickerName.trim() || NAMES[ticker] || ticker
         };
         
         setCustomTickers([...customTickers, newTicker]);
         setNewTickerInput("");
+        setNewTickerName("");
     };
 
     const handleRemoveTicker = (symbol) => {
@@ -366,6 +368,12 @@ function DipBuyDashboard() {
         setProgress("");
         const allAssets = [];
         let failed = [];
+
+        // Create a map of custom ticker names for lookup
+        const customNameMap = {};
+        customTickers.forEach(t => {
+            customNameMap[t.symbol] = t.readableName;
+        });
 
         const allSymbols = [
             ...SYMBOLS.indexes.map(s => ({ symbol: s, type: 'index' })),
@@ -386,7 +394,8 @@ function DipBuyDashboard() {
             const data = await fetchStockData(item.symbol);
             if (data) {
                 data.type = item.type;
-                data.readableName = NAMES[item.symbol] || item.symbol;
+                // Use custom name if it exists, otherwise use NAMES mapping
+                data.readableName = customNameMap[item.symbol] || NAMES[item.symbol] || item.symbol;
                 allAssets.push(data);
             } else {
                 failed.push(item.symbol);
@@ -400,7 +409,8 @@ function DipBuyDashboard() {
             setProgress(`Fetching... (${current + 1}/${total}) ${item.symbol}`);
             const data = await fetchCryptoData(item.symbol);
             if (data) {
-                data.readableName = NAMES[item.symbol] || data.name;
+                // Use custom name if it exists, otherwise use NAMES mapping
+                data.readableName = customNameMap[item.symbol] || NAMES[item.symbol] || data.name;
                 allAssets.push(data);
             } else {
                 failed.push(item.symbol);
@@ -518,8 +528,19 @@ function DipBuyDashboard() {
                             value: newTickerInput,
                             onChange: (e) => setNewTickerInput(e.target.value.toUpperCase()),
                             onKeyPress: (e) => e.key === 'Enter' && handleAddTicker(),
-                            placeholder: "e.g., TSLA, BTC, GLD",
-                            className: "px-3 py-2 bg-slate-700 text-white rounded border border-slate-600 focus:outline-none focus:border-emerald-500 w-32"
+                            placeholder: "e.g., TSLA",
+                            className: "px-3 py-2 bg-slate-700 text-white rounded border border-slate-600 focus:outline-none focus:border-emerald-500 w-28"
+                        })
+                    ),
+                    React.createElement("div", null,
+                        React.createElement("label", { className: "block text-sm text-slate-300 mb-2" }, "Label (Optional)"),
+                        React.createElement("input", {
+                            type: "text",
+                            value: newTickerName,
+                            onChange: (e) => setNewTickerName(e.target.value),
+                            onKeyPress: (e) => e.key === 'Enter' && handleAddTicker(),
+                            placeholder: "e.g., My Dividend Stock",
+                            className: "px-3 py-2 bg-slate-700 text-white rounded border border-slate-600 focus:outline-none focus:border-emerald-500 w-48"
                         })
                     ),
                     React.createElement("div", null,
@@ -549,7 +570,10 @@ function DipBuyDashboard() {
                                 key: ticker.symbol,
                                 className: "inline-flex items-center gap-2 px-3 py-1 bg-blue-900/50 border border-blue-700 text-blue-300 rounded-full text-sm"
                             },
-                                ticker.symbol,
+                                React.createElement("div", null,
+                                    React.createElement("span", { className: "font-bold" }, ticker.symbol),
+                                    ticker.readableName !== ticker.symbol && React.createElement("span", { className: "text-blue-200 text-xs ml-1" }, `(${ticker.readableName})`)
+                                ),
                                 React.createElement("button", {
                                     onClick: () => handleRemoveTicker(ticker.symbol),
                                     className: "ml-1 font-bold hover:text-blue-100 cursor-pointer"
