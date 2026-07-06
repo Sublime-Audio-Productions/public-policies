@@ -4,549 +4,745 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Dip Buy Scanner</title>
+
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+
     <style>
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
-        .animate-spin {
-            animation: spin 1s linear infinite;
-        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .animate-spin { animation: spin 1s linear infinite; }
     </style>
 </head>
+
 <body>
-    <div id="root"></div>
-    <script>
-        const { useState, useEffect, useMemo } = React;
+<div id="root"></div>
 
-        function DipBuyDashboard() {
-            const [assets, setAssets] = useState([]);
-            const [loading, setLoading] = useState(false);
-            const [error, setError] = useState(null);
-            const [lastUpdate, setLastUpdate] = useState(null);
-            const [sortConfig, setSortConfig] = useState({ key: 'dipScore', direction: 'desc' });
-            const [filterAssetType, setFilterAssetType] = useState('all');
-            const [progress, setProgress] = useState('');
+<script>
+const { useState, useEffect, useMemo } = React;
+const { TrendingDown, TrendingUp, AlertCircle, Loader, RefreshCw } = lucide;
 
-            useEffect(() => {
-                const cached = localStorage.getItem('dipbuy_cache');
-                if (cached) {
-                    try {
-                        const { assets: cachedAssets, timestamp } = JSON.parse(cached);
-                        setAssets(cachedAssets);
-                        setLastUpdate(new Date(timestamp));
-                    } catch (err) {
-                        console.error('Cache load error:', err);
-                    }
-                }
-            }, []);
+/* =========================
+   CONFIG
+   Finnhub -> stocks, ETFs, commodities, leveraged
+   Twelve Data -> real index-level prices (Finnhub free tier doesn't include these)
+   CoinGecko -> crypto
+========================= */
+const FINNHUB_API_KEY = "d90f5mhr01qk8bflc40gd90f5mhr01qk8bflc410";
+const TWELVE_DATA_API_KEY = "YOUR_TWELVE_DATA_API_KEY"; // get a free key at twelvedata.com (800 credits/day free)
 
-            const fetchStockData = async (symbol) => {
-                try {
-                    // Try direct fetch first
-                    const response = await fetch(
-                        `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${symbol}?modules=price,defaultKeyStatistics`,
-                        { mode: 'no-cors' }
-                    );
-                    
-                    if (response.ok) {
-                        const data = await response.json();
-                        if (data.quoteSummary?.result?.[0]) {
-                            const result = data.quoteSummary.result[0];
-                            const priceData = result.price;
-                            if (priceData?.regularMarketPrice?.raw) {
-                                const currentPrice = priceData.regularMarketPrice.raw;
-                                const previousClose = priceData.regularMarketPreviousClose?.raw || currentPrice;
-                                const priceChange24h = ((currentPrice - previousClose) / previousClose) * 100;
+/* =========================
+   INDEX DEFINITIONS (Twelve Data symbols)
+   Verify these against Twelve Data's symbol search if any come back empty -
+   coverage/naming can vary by plan.
+========================= */
+const INDEXES = [
+    { symbol: "SPX",  name: "S&P 500" },
+    { symbol: "NDX",  name: "NASDAQ 100" },
+    { symbol: "N225", name: "Nikkei 225 (Japan)" },
+    { symbol: "HSI",  name: "Hang Seng (Hong Kong)" },
+    { symbol: "SSEC", name: "Shanghai Composite (China)" }
+];
 
-                                return {
-                                    id: symbol,
-                                    name: symbol,
-                                    symbol,
-                                    type: 'stock',
-                                    currentPrice,
-                                    priceChange24h,
-                                    price52WkHigh: priceData.fiftyTwoWeekHigh?.raw || currentPrice,
-                                    price52WkLow: priceData.fiftyTwoWeekLow?.raw || currentPrice,
-                                    ma200Day: null,
-                                    rsi: 50 + (priceChange24h * 2),
-                                    volume24h: priceData.regularMarketVolume?.raw || 0,
-                                    volumeMA20Day: (priceData.regularMarketVolume?.raw || 0) * 0.85,
-                                    pe: result.defaultKeyStatistics?.trailingPE?.raw || null,
-                                    dividendYield: (result.defaultKeyStatistics?.trailingAnnualDividendYield?.raw || 0) * 100,
-                                    fetchedAt: new Date(),
-                                };
-                            }
-                        }
-                    }
-                } catch (err) {
-                    console.error(`Error fetching ${symbol}:`, err.message);
-                }
+/* =========================
+   SYMBOLS TO TRACK
+========================= */
+const SYMBOLS = {
+    indexes: INDEXES.map(i => i.symbol),
+    stocks: [
+        "AAPL", "MSFT", "GOOGL", "AMZN", "TSLA",
+        "META", "NVDA", "AMD", "ADBE", "NFLX",
+        "CRM", "INTC", "QCOM", "AVGO", "PYPL"
+    ],
+    etfs: [
+        "IVV", "VOO", "VTI", "IWM", "EEM", "GLD",
+        "XLK", "XLF", "XLE", "XLV"
+    ],
+    commodities: [
+        "USO",      // Oil
+        "UNG",      // Natural Gas
+        "DBC"       // Commodities (includes cocoa)
+    ],
+    leveraged: [
+        "FAS",      // 3x Financials
+        "NAIL",     // 3x Homebuilders
+        "DPST",     // 3x Inverse Tech
+        "KOLD",     // 3x Inverse Natural Gas
+        "BLOK",     // Blockchain
+        "TECL",     // 3x Leveraged Tech
+        "TQQQ"      // 3x Leveraged NASDAQ-100
+    ],
+    crypto: [
+        "bitcoin", "ethereum", "cardano", "solana", "ripple",
+        "monero", "stellar", "avalanche-2"
+    ]
+};
 
-                // Fallback: Generate realistic mock data based on symbol
-                const companyNames = {
-                    'AAPL': 'Apple Inc.', 'MSFT': 'Microsoft Corp.', 'GOOGL': 'Alphabet Inc.', 'AMZN': 'Amazon.com Inc.', 'TSLA': 'Tesla Inc.',
-                    'META': 'Meta Platforms Inc.', 'NVDA': 'NVIDIA Corp.', 'AMD': 'Advanced Micro Devices', 'INTEL': 'Intel Corp.', 'ADBE': 'Adobe Inc.',
-                    'CRM': 'Salesforce Inc.', 'NFLX': 'Netflix Inc.', 'SNPS': 'Synopsys Inc.', 'ASML': 'ASML Holding', 'QCOM': 'Qualcomm Inc.',
-                    'BABA': 'Alibaba Group', 'SAP': 'SAP SE', 'INFY': 'Infosys Limited',
-                    'SPY': 'S&P 500 ETF', 'QQQ': 'Nasdaq-100 ETF', 'VOO': 'Vanguard S&P 500 ETF', 'IWM': 'Russell 2000 ETF', 
-                    'XLV': 'Health Care Select Sector ETF', 'XLK': 'Tech Select Sector ETF', 'XLC': 'Comm Services Sector ETF', 
-                    'XLE': 'Energy Select Sector ETF', 'XLF': 'Financials Select Sector ETF',
-                    'EWU': 'iShares MSCI UK ETF', 'EWG': 'iShares MSCI Germany ETF', 'EWJ': 'iShares MSCI Japan ETF', 
-                    'EWA': 'iShares MSCI Australia ETF', 'ASHR': 'Arca China Index ETF', 'FXI': 'iShares China Large-Cap ETF', 'INDL': 'India ETF'
-                };
+/* =========================
+   READABLE NAMES MAPPING
+========================= */
+const NAMES = {
+    // Global Indexes (Twelve Data symbols)
+    ...Object.fromEntries(INDEXES.map(i => [i.symbol, i.name])),
 
-                const mockPrices = {
-                    'AAPL': 175.42, 'MSFT': 425.89, 'GOOGL': 142.30, 'AMZN': 178.45, 'TSLA': 242.84,
-                    'META': 502.35, 'NVDA': 875.23, 'AMD': 189.50, 'INTEL': 42.15, 'ADBE': 687.45,
-                    'CRM': 305.67, 'NFLX': 456.34, 'SNPS': 512.89, 'ASML': 645.23, 'QCOM': 198.76,
-                    'BABA': 95.23, 'SAP': 112.45, 'INFY': 21.34, 'SPY': 458.34, 'QQQ': 385.45,
-                    'VOO': 445.67, 'IWM': 198.34, 'XLV': 145.67, 'XLK': 225.34, 'XLC': 78.45,
-                    'XLE': 89.23, 'XLF': 38.45, 'EWU': 32.45, 'EWG': 28.56, 'EWJ': 25.34,
-                    'EWA': 67.89, 'ASHR': 45.23, 'FXI': 31.67, 'INDL': 85.45
-                };
+    // Stocks
+    "AAPL": "Apple Inc.",
+    "MSFT": "Microsoft",
+    "GOOGL": "Alphabet",
+    "AMZN": "Amazon",
+    "TSLA": "Tesla",
+    "META": "Meta Platforms",
+    "NVDA": "NVIDIA",
+    "AMD": "AMD",
+    "ADBE": "Adobe",
+    "NFLX": "Netflix",
+    "CRM": "Salesforce",
+    "INTC": "Intel",
+    "QCOM": "Qualcomm",
+    "AVGO": "Broadcom",
+    "PYPL": "PayPal",
 
-                const basePrice = mockPrices[symbol] || (Math.random() * 300 + 50);
-                const priceChange24h = (Math.random() - 0.48) * 8; // Slight downward bias for dips
-                const currentPrice = basePrice * (1 + priceChange24h / 100);
-                const pe = Math.random() * 40 + 12;
-                const dividendYield = Math.random() * 3;
+    // Regular ETFs
+    "IVV": "iShares Core S&P 500",
+    "VOO": "Vanguard S&P 500",
+    "VTI": "Total US Stock",
+    "IWM": "Russell 2000",
+    "EEM": "MSCI Emerging Markets",
+    "GLD": "Gold",
+    "XLK": "Technology Select",
+    "XLF": "Financial Select",
+    "XLE": "Energy Select",
+    "XLV": "Healthcare Select",
 
-                return {
-                    id: symbol,
-                    name: companyNames[symbol] || symbol,
-                    symbol,
-                    type: 'stock',
-                    currentPrice: parseFloat(currentPrice.toFixed(2)),
-                    priceChange24h: parseFloat(priceChange24h.toFixed(2)),
-                    price52WkHigh: parseFloat((basePrice * 1.35).toFixed(2)),
-                    price52WkLow: parseFloat((basePrice * 0.65).toFixed(2)),
-                    ma200Day: null,
-                    rsi: Math.max(20, Math.min(80, 50 + (priceChange24h * 2))),
-                    volume24h: Math.floor(Math.random() * 100000000 + 10000000),
-                    volumeMA20Day: Math.floor(Math.random() * 80000000 + 10000000),
-                    pe: Math.random() > 0.3 ? parseFloat(pe.toFixed(1)) : null,
-                    dividendYield: Math.random() > 0.6 ? parseFloat(dividendYield.toFixed(2)) : 0,
-                    fetchedAt: new Date(),
-                };
-            };
+    // Commodities
+    "USO": "Oil (Crude)",
+    "UNG": "Natural Gas",
+    "DBC": "Commodities Bundle",
 
-            const fetchCryptoData = async (coinId) => {
-                try {
-                    const response = await fetch(
-                        `https://api.coingecko.com/api/v3/coins/${coinId}?localization=false&tickers=false&market_data=true&community_data=false&developer_data=false`
-                    );
-                    const data = await response.json();
+    // Leveraged/Inverse ETFs
+    "FAS": "3x Financials (Bullish)",
+    "NAIL": "3x Homebuilders (Bullish)",
+    "DPST": "3x Tech Inverse (Bearish)",
+    "KOLD": "3x Gas Inverse (Bearish)",
+    "BLOK": "Blockchain ETF",
+    "TECL": "3x Tech Leverage (Bullish)",
+    "TQQQ": "3x NASDAQ Leverage (Bullish)",
 
-                    if (!data.market_data) {
-                        return null;
-                    }
+    // Crypto
+    "bitcoin": "Bitcoin",
+    "ethereum": "Ethereum",
+    "cardano": "Cardano",
+    "solana": "Solana",
+    "ripple": "XRP",
+    "monero": "Monero",
+    "stellar": "Stellar",
+    "avalanche-2": "Avalanche"
+};
 
-                    const marketData = data.market_data;
-                    const priceChange24h = marketData.price_change_percentage_24h || 0;
+/* =========================
+   CALCULATE RSI
+========================= */
+const calculateRSI = (prices) => {
+    if (!prices || prices.length < 14) return 50;
 
-                    let rsi = 50;
-                    if (priceChange24h < -8) rsi = 20;
-                    else if (priceChange24h < -6) rsi = 25;
-                    else if (priceChange24h < -4) rsi = 30;
-                    else if (priceChange24h < -2) rsi = 35;
-                    else if (priceChange24h > 8) rsi = 80;
-                    else if (priceChange24h > 6) rsi = 75;
-                    else if (priceChange24h > 4) rsi = 70;
+    let gains = 0;
+    let losses = 0;
+    const period = Math.min(14, prices.length);
 
-                    return {
-                        id: data.symbol?.toUpperCase() || coinId.toUpperCase(),
-                        name: data.name,
-                        symbol: data.symbol?.toUpperCase(),
-                        type: 'crypto',
-                        currentPrice: marketData.current_price?.usd || 0,
-                        priceChange24h,
-                        price52WkHigh: marketData.ath?.usd || 0,
-                        price52WkLow: marketData.atl?.usd || 0,
-                        ma200Day: null,
-                        rsi,
-                        volume24h: marketData.total_volume?.usd || 0,
-                        volumeMA20Day: (marketData.total_volume?.usd || 0) * 0.8,
-                        pe: null,
-                        dividendYield: 0,
-                        fetchedAt: new Date(),
-                    };
-                } catch (err) {
-                    console.error(`Error fetching ${coinId}:`, err.message);
-                    return null;
-                }
-            };
+    for (let i = prices.length - period; i < prices.length; i++) {
+        const change = prices[i] - prices[i - 1];
+        if (change > 0) gains += change;
+        else losses += Math.abs(change);
+    }
 
-            const handleUpdate = async () => {
-                setLoading(true);
-                setError(null);
-                setProgress('');
-                const allAssets = [];
+    const avgGain = gains / period;
+    const avgLoss = losses / period;
+    if (avgLoss === 0) return avgGain > 0 ? 100 : 0;
 
-                // US Tech Giants
-                const usTech = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA', 'AMD', 'INTEL', 'ADBE', 'CRM', 'NFLX', 'SNPS', 'ASML', 'QCOM'];
-                
-                // Global Tech Companies
-                const globalTech = ['ASML', 'BABA', 'TENCENT', 'SAMSUNG', 'SAP', 'INFY', 'ANGL'];
-                
-                // US Indexes
-                const usIndexes = ['SPY', 'QQQ', 'VOO', 'IWM', 'XLV', 'XLK', 'XLC', 'XLE', 'XLF'];
-                
-                // International Indexes
-                const intlIndexes = ['EWU', 'EWG', 'EWJ', 'EWA', 'ASHR', 'FXI', 'INDL'];
-                
-                // Cryptocurrencies
-                const crypto = ['bitcoin', 'ethereum', 'cardano', 'solana', 'ripple', 'polkadot', 'dogecoin', 'litecoin', 'uniswap', 'chainlink', 'avalanche-2', 'polygon', 'arbitrum', 'optimism', 'stellar', 'monero', 'zcash'];
+    const rs = avgGain / avgLoss;
+    const rsi = 100 - 100 / (1 + rs);
 
-                let total = usTech.length + globalTech.length + usIndexes.length + intlIndexes.length + crypto.length;
-                let current = 0;
+    return isNaN(rsi) ? 50 : Math.min(100, Math.max(0, rsi));
+};
 
-                // Fetch US Tech
-                for (const symbol of usTech) {
-                    setProgress(`Fetching ${symbol}...`);
-                    const data = await fetchStockData(symbol);
-                    if (data) {
-                        data.type = 'stock';
-                        allAssets.push(data);
-                    }
-                    current++;
-                    setProgress(`${current}/${total} assets loaded...`);
-                    await new Promise(resolve => setTimeout(resolve, 200));
-                }
+/* helper shared by stock/index proxy-RSI estimation */
+const estimateRSI = (change24h) => {
+    let rsi = 50;
+    if (change24h < -10) rsi = 20;
+    else if (change24h < -8) rsi = 25;
+    else if (change24h < -6) rsi = 30;
+    else if (change24h < -4) rsi = 35;
+    else if (change24h < -2) rsi = 40;
+    else if (change24h < 0) rsi = 45;
+    else if (change24h < 2) rsi = 55;
+    else if (change24h < 4) rsi = 60;
+    else if (change24h > 10) rsi = 80;
+    return rsi;
+};
 
-                // Fetch Global Tech
-                for (const symbol of globalTech) {
-                    setProgress(`Fetching ${symbol}...`);
-                    const data = await fetchStockData(symbol);
-                    if (data) {
-                        data.type = 'stock';
-                        allAssets.push(data);
-                    }
-                    current++;
-                    setProgress(`${current}/${total} assets loaded...`);
-                    await new Promise(resolve => setTimeout(resolve, 200));
-                }
+/* =========================
+   FETCH STOCK DATA (FINNHUB)
+   Used for stocks, ETFs, commodities, leveraged ETFs
+========================= */
+const fetchStockData = async (symbol) => {
+    try {
+        const quoteRes = await fetch(
+            `https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${FINNHUB_API_KEY}`
+        );
 
-                // Fetch US Indexes
-                for (const symbol of usIndexes) {
-                    setProgress(`Fetching ${symbol}...`);
-                    const data = await fetchStockData(symbol);
-                    if (data) {
-                        data.type = 'index';
-                        allAssets.push(data);
-                    }
-                    current++;
-                    setProgress(`${current}/${total} assets loaded...`);
-                    await new Promise(resolve => setTimeout(resolve, 200));
-                }
+        const quote = await quoteRes.json();
 
-                // Fetch International Indexes
-                for (const symbol of intlIndexes) {
-                    setProgress(`Fetching ${symbol}...`);
-                    const data = await fetchStockData(symbol);
-                    if (data) {
-                        data.type = 'index';
-                        allAssets.push(data);
-                    }
-                    current++;
-                    setProgress(`${current}/${total} assets loaded...`);
-                    await new Promise(resolve => setTimeout(resolve, 200));
-                }
+        if (!quote || !quote.c) return null;
 
-                // Fetch Crypto
-                for (const coinId of crypto) {
-                    setProgress(`Fetching ${coinId}...`);
-                    const data = await fetchCryptoData(coinId);
-                    if (data) {
-                        allAssets.push(data);
-                    }
-                    current++;
-                    setProgress(`${current}/${total} assets loaded...`);
-                    await new Promise(resolve => setTimeout(resolve, 100));
-                }
+        const currentPrice = quote.c;
+        const previousClose = quote.pc || currentPrice;
+        const change24h = ((currentPrice - previousClose) / previousClose) * 100;
 
-                if (allAssets.length > 0) {
-                    setAssets(allAssets);
-                    setLastUpdate(new Date());
+        return {
+            id: symbol,
+            symbol,
+            name: symbol,
+            type: "stock",
+            currentPrice,
+            priceChange24h: change24h,
+            volume24h: quote.v || 0,
+            volumeMA20Day: Math.max((quote.v || 0) * 0.85, 1),
+            rsi: estimateRSI(change24h),
+            ma200Day: null,
+            pe: null,
+            dividendYield: 0,
+            price52WkHigh: quote.h || currentPrice,
+            price52WkLow: quote.l || currentPrice,
+            fetchedAt: new Date()
+        };
+    } catch (e) {
+        console.error(`Error fetching ${symbol}:`, e);
+        return null;
+    }
+};
 
-                    localStorage.setItem(
-                        'dipbuy_cache',
-                        JSON.stringify({
-                            assets: allAssets,
-                            timestamp: new Date().toISOString(),
-                        })
-                    );
+/* =========================
+   FETCH INDEX DATA (TWELVE DATA)
+   Real index-level prices - Finnhub's free tier doesn't include these
+========================= */
+const fetchIndexData = async (symbol) => {
+    try {
+        const res = await fetch(
+            `https://api.twelvedata.com/quote?symbol=${symbol}&apikey=${TWELVE_DATA_API_KEY}`
+        );
+        const data = await res.json();
 
-                    setProgress(`✅ Updated ${allAssets.length} assets`);
-                    setTimeout(() => setProgress(''), 3000);
-                } else {
-                    setError('Failed to fetch data. Please try again.');
-                }
+        // Twelve Data returns {"status":"error", ...} for bad symbols/keys/quota
+        if (!data || data.status === "error" || data.close === undefined) {
+            console.error(`Twelve Data error for ${symbol}:`, data && data.message);
+            return null;
+        }
 
-                setLoading(false);
-            };
+        const currentPrice = parseFloat(data.close);
+        const previousClose = parseFloat(data.previous_close) || currentPrice;
+        const change24h = previousClose
+            ? ((currentPrice - previousClose) / previousClose) * 100
+            : parseFloat(data.percent_change) || 0;
+        const volume = parseFloat(data.volume) || 0;
+        const high52 = data.fifty_two_week ? parseFloat(data.fifty_two_week.high) : currentPrice;
+        const low52 = data.fifty_two_week ? parseFloat(data.fifty_two_week.low) : currentPrice;
 
-            const calculateDipScore = (asset) => {
-                let score = 0;
+        return {
+            id: symbol,
+            symbol,
+            name: data.name || symbol,
+            type: "index",
+            currentPrice,
+            priceChange24h: change24h,
+            volume24h: volume,
+            volumeMA20Day: Math.max(volume * 0.85, 1),
+            rsi: estimateRSI(change24h),
+            ma200Day: null,
+            pe: null,
+            dividendYield: 0,
+            price52WkHigh: isNaN(high52) ? currentPrice : high52,
+            price52WkLow: isNaN(low52) ? currentPrice : low52,
+            fetchedAt: new Date()
+        };
+    } catch (e) {
+        console.error(`Error fetching index ${symbol}:`, e);
+        return null;
+    }
+};
 
-                if (asset.rsi < 25) score += 25;
-                else if (asset.rsi < 30) score += 20;
-                else if (asset.rsi < 35) score += 10;
+/* =========================
+   FETCH CRYPTO DATA (COINGECKO - FREE!)
+========================= */
+const fetchCryptoData = async (coinId) => {
+    try {
+        const response = await fetch(
+            `https://api.coingecko.com/api/v3/coins/${coinId}?localization=false&tickers=false&market_data=true&community_data=false&developer_data=false`
+        );
 
-                if (asset.priceChange24h < -6) score += 20;
-                else if (asset.priceChange24h < -4) score += 15;
-                else if (asset.priceChange24h < -2) score += 8;
+        const data = await response.json();
 
-                if (asset.volumeMA20Day > 0) {
-                    const volumeRatio = asset.volume24h / asset.volumeMA20Day;
-                    if (volumeRatio > 1.8 && asset.priceChange24h < -3) score += 20;
-                    else if (volumeRatio > 1.5 && asset.priceChange24h < -2) score += 15;
-                    else if (volumeRatio > 1.2 && asset.priceChange24h < -1) score += 10;
-                }
+        if (!data.market_data) return null;
 
-                if (asset.pe && asset.pe > 0) {
-                    if (asset.pe < 18) score += 20;
-                    else if (asset.pe < 22) score += 15;
-                    else if (asset.pe < 28) score += 10;
-                    else if (asset.pe < 35) score += 5;
-                }
+        const marketData = data.market_data;
+        const currentPrice = marketData.current_price?.usd || 0;
+        const priceChange24h = marketData.price_change_percentage_24h || 0;
 
-                if (asset.dividendYield > 0) {
-                    if (asset.dividendYield > 3) score += 15;
-                    else if (asset.dividendYield > 2) score += 10;
-                    else if (asset.dividendYield > 1) score += 5;
-                }
+        return {
+            id: data.symbol?.toUpperCase() || coinId.toUpperCase(),
+            symbol: data.symbol?.toUpperCase() || coinId.toUpperCase(),
+            name: data.name,
+            type: "crypto",
+            currentPrice,
+            priceChange24h,
+            volume24h: marketData.total_volume?.usd || 0,
+            volumeMA20Day: (marketData.total_volume?.usd || 0) * 0.8,
+            rsi: estimateRSI(priceChange24h),
+            ma200Day: null,
+            pe: null,
+            dividendYield: 0,
+            price52WkHigh: marketData.ath?.usd || currentPrice,
+            price52WkLow: marketData.atl?.usd || currentPrice,
+            fetchedAt: new Date()
+        };
+    } catch (e) {
+        console.error(`Error fetching ${coinId}:`, e);
+        return null;
+    }
+};
 
-                return Math.min(100, score);
-            };
+/* =========================
+   CALCULATE DIP SCORE (IMPROVED)
+========================= */
+const calculateDipScore = (asset) => {
+    let score = 0;
 
-            const assetsWithScores = useMemo(() => {
-                return assets.map((asset) => ({
-                    ...asset,
-                    dipScore: calculateDipScore(asset),
-                    volumeRatio: asset.volumeMA20Day > 0 ? asset.volume24h / asset.volumeMA20Day : 1,
-                }));
-            }, [assets]);
+    // Price momentum is primary indicator (0-40 points)
+    // Down moves indicate potential dips
+    if (asset.priceChange24h < -10) score += 40;
+    else if (asset.priceChange24h < -8) score += 35;
+    else if (asset.priceChange24h < -6) score += 30;
+    else if (asset.priceChange24h < -4) score += 25;
+    else if (asset.priceChange24h < -2) score += 18;
+    else if (asset.priceChange24h < 0) score += 10;
+    else if (asset.priceChange24h < 2) score += 5;
 
-            const filteredAssets = useMemo(() => {
-                let filtered = assetsWithScores;
+    // RSI Signal (0-30 points) - Oversold is key
+    if (asset.rsi < 20) score += 30;
+    else if (asset.rsi < 25) score += 25;
+    else if (asset.rsi < 30) score += 20;
+    else if (asset.rsi < 35) score += 15;
+    else if (asset.rsi < 40) score += 10;
+    else if (asset.rsi > 70) score -= 10; // Overbought reduces score
 
-                if (filterAssetType !== 'all') {
-                    filtered = filtered.filter((a) => a.type === filterAssetType);
-                }
+    // Volume surge (0-20 points) - Panic selling shows conviction
+    if (asset.volumeMA20Day > 0) {
+        const volumeRatio = asset.volume24h / asset.volumeMA20Day;
+        if (volumeRatio > 2.5) score += 20;
+        else if (volumeRatio > 2.0) score += 18;
+        else if (volumeRatio > 1.8) score += 16;
+        else if (volumeRatio > 1.5) score += 12;
+        else if (volumeRatio > 1.2) score += 8;
+        else if (volumeRatio > 1.0) score += 3;
+    }
 
-                return filtered.sort((a, b) => {
-                    const aValue = a[sortConfig.key];
-                    const bValue = b[sortConfig.key];
+    // Valuation bonus (0-10 points) - Low PE is attractive
+    if (asset.pe && asset.pe > 0) {
+        if (asset.pe < 12) score += 10;
+        else if (asset.pe < 15) score += 8;
+        else if (asset.pe < 18) score += 6;
+        else if (asset.pe < 22) score += 4;
+        else if (asset.pe > 40) score -= 5; // Very expensive gets penalty
+    }
 
-                    if (sortConfig.direction === 'asc') {
-                        return aValue > bValue ? 1 : -1;
-                    } else {
-                        return aValue < bValue ? 1 : -1;
-                    }
-                });
-            }, [assetsWithScores, filterAssetType, sortConfig]);
+    // Return to realistic range (0-100)
+    return Math.max(0, Math.min(100, score));
+};
 
-            const getDipScoreColor = (score) => {
-                if (score >= 70) return 'bg-green-100 text-green-700 border-green-300';
-                if (score >= 50) return 'bg-emerald-100 text-emerald-700 border-emerald-300';
-                if (score >= 30) return 'bg-yellow-100 text-yellow-700 border-yellow-300';
-                return 'bg-gray-100 text-gray-700 border-gray-300';
-            };
+/* =========================
+   MAIN APP
+========================= */
+function DipBuyDashboard() {
+    const [assets, setAssets] = useState([]);
+    const [loading, setLoading] = useState(false);
+    const [progress, setProgress] = useState("");
+    const [lastUpdate, setLastUpdate] = useState(null);
+    const [sortConfig, setSortConfig] = useState({ key: 'dipScore', direction: 'desc' });
+    const [filterType, setFilterType] = useState('all');
+    const [customTickers, setCustomTickers] = useState([]);
+    const [newTickerInput, setNewTickerInput] = useState("");
+    const [newTickerName, setNewTickerName] = useState("");
+    const [newTickerType, setNewTickerType] = useState("stock");
 
-            const getRSIColor = (rsi) => {
-                if (rsi < 25) return 'text-red-600 font-bold';
-                if (rsi < 30) return 'text-orange-600 font-semibold';
-                if (rsi < 35) return 'text-yellow-600 font-semibold';
-                return 'text-gray-600';
-            };
+    // Load cached data on mount
+    useEffect(() => {
+        const cached = localStorage.getItem('dipbuy_cache');
+        if (cached) {
+            try {
+                const { assets: cachedAssets, timestamp } = JSON.parse(cached);
+                setAssets(cachedAssets);
+                setLastUpdate(new Date(timestamp));
+            } catch (err) {
+                console.error('Cache load error:', err);
+            }
+        }
+    }, []);
 
-            const getPriceChangeColor = (change) => {
-                if (change < 0) return 'text-red-600 font-semibold';
-                return 'text-green-600 font-semibold';
-            };
+    const handleAddTicker = () => {
+        if (!newTickerInput.trim()) return;
 
-            return React.createElement(
-                'div',
-                { className: 'min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 p-4 sm:p-6' },
-                React.createElement(
-                    'div',
-                    { className: 'max-w-6xl mx-auto' },
-                    // Header
-                    React.createElement(
-                        'div',
-                        { className: 'mb-8' },
-                        React.createElement(
-                            'div',
-                            { className: 'flex items-center gap-3 mb-2' },
-                            React.createElement('svg', {
-                                className: 'w-8 h-8 text-emerald-400',
-                                fill: 'none',
-                                stroke: 'currentColor',
-                                viewBox: '0 0 24 24'
-                            }, React.createElement('path', { strokeLinecap: 'round', strokeLinejoin: 'round', strokeWidth: 2, d: 'M13 17H3v-2h10V9H5v2h8V7h6v10h-6v2z' })),
-                            React.createElement('h1', { className: 'text-3xl sm:text-4xl font-bold text-white' }, 'Dip Buy Scanner')
-                        ),
-                        React.createElement('p', { className: 'text-slate-400 text-sm' }, 'Real-time analysis of stocks, ETFs, and crypto')
+        const ticker = newTickerInput.trim().toUpperCase();
+
+        // Check if already exists
+        if (customTickers.some(t => t.symbol === ticker)) {
+            alert(`${ticker} is already being tracked!`);
+            setNewTickerInput("");
+            return;
+        }
+
+        const newTicker = {
+            symbol: ticker,
+            type: newTickerType,
+            readableName: newTickerName.trim() || NAMES[ticker] || ticker
+        };
+
+        setCustomTickers([...customTickers, newTicker]);
+        setNewTickerInput("");
+        setNewTickerName("");
+    };
+
+    const handleRemoveTicker = (symbol) => {
+        setCustomTickers(customTickers.filter(t => t.symbol !== symbol));
+    };
+
+    const handleUpdate = async () => {
+        setLoading(true);
+        setProgress("");
+        const allAssets = [];
+        let failed = [];
+
+        // Create a map of custom ticker names for lookup
+        const customNameMap = {};
+        customTickers.forEach(t => {
+            customNameMap[t.symbol] = t.readableName;
+        });
+
+        const allSymbols = [
+            ...SYMBOLS.indexes.map(s => ({ symbol: s, type: 'index' })),
+            ...SYMBOLS.stocks.map(s => ({ symbol: s, type: 'stock' })),
+            ...SYMBOLS.etfs.map(s => ({ symbol: s, type: 'etf' })),
+            ...SYMBOLS.commodities.map(s => ({ symbol: s, type: 'commodity' })),
+            ...SYMBOLS.leveraged.map(s => ({ symbol: s, type: 'leveraged' })),
+            ...SYMBOLS.crypto.map(s => ({ symbol: s, type: 'crypto' })),
+            ...customTickers.map(s => ({ symbol: s.symbol, type: s.type }))
+        ];
+
+        let current = 0;
+        const total = allSymbols.length;
+
+        // Fetch indexes (Twelve Data)
+        for (const item of allSymbols.filter(x => x.type === 'index')) {
+            setProgress(`Fetching... (${current + 1}/${total}) ${item.symbol}`);
+            const data = await fetchIndexData(item.symbol);
+            if (data) {
+                data.readableName = customNameMap[item.symbol] || NAMES[item.symbol] || data.name;
+                allAssets.push(data);
+            } else {
+                failed.push(item.symbol);
+            }
+            current++;
+            // Twelve Data free tier is rate-limited (8 req/min) - space these out
+            await new Promise(resolve => setTimeout(resolve, 800));
+        }
+
+        // Fetch stocks, ETFs, commodities, leveraged (Finnhub)
+        for (const item of allSymbols.filter(x => !['crypto', 'index'].includes(x.type))) {
+            setProgress(`Fetching... (${current + 1}/${total}) ${item.symbol}`);
+            const data = await fetchStockData(item.symbol);
+            if (data) {
+                data.type = item.type;
+                // Use custom name if it exists, otherwise use NAMES mapping
+                data.readableName = customNameMap[item.symbol] || NAMES[item.symbol] || item.symbol;
+                allAssets.push(data);
+            } else {
+                failed.push(item.symbol);
+            }
+            current++;
+            await new Promise(resolve => setTimeout(resolve, 250));
+        }
+
+        // Fetch crypto (CoinGecko)
+        for (const item of allSymbols.filter(x => x.type === 'crypto')) {
+            setProgress(`Fetching... (${current + 1}/${total}) ${item.symbol}`);
+            const data = await fetchCryptoData(item.symbol);
+            if (data) {
+                // Use custom name if it exists, otherwise use NAMES mapping
+                data.readableName = customNameMap[item.symbol] || NAMES[item.symbol] || data.name;
+                allAssets.push(data);
+            } else {
+                failed.push(item.symbol);
+            }
+            current++;
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+
+        if (allAssets.length > 0) {
+            setAssets(allAssets);
+            setLastUpdate(new Date());
+            localStorage.setItem('dipbuy_cache', JSON.stringify({ assets: allAssets, timestamp: new Date().toISOString() }));
+        }
+
+        setLoading(false);
+        let msg = `✅ Updated ${allAssets.length}/${total} assets`;
+        if (failed.length > 0) {
+            msg += ` (Failed: ${failed.join(", ")})`;
+        }
+        setProgress(msg);
+        setTimeout(() => setProgress(""), 5000);
+    };
+
+    const assetsWithScores = useMemo(() => {
+        return assets.map((asset) => ({
+            ...asset,
+            dipScore: calculateDipScore(asset),
+            volumeRatio: asset.volumeMA20Day > 0 ? asset.volume24h / asset.volumeMA20Day : 1,
+        }));
+    }, [assets]);
+
+    const filteredAssets = useMemo(() => {
+        let filtered = assetsWithScores;
+
+        if (filterType !== 'all') {
+            filtered = filtered.filter((a) => a.type === filterType);
+        }
+
+        return filtered.sort((a, b) => {
+            const aValue = a[sortConfig.key];
+            const bValue = b[sortConfig.key];
+
+            if (sortConfig.direction === 'asc') {
+                return aValue > bValue ? 1 : -1;
+            } else {
+                return aValue < bValue ? 1 : -1;
+            }
+        });
+    }, [assetsWithScores, filterType, sortConfig]);
+
+    const getDipScoreColor = (score) => {
+        if (score >= 70) return 'text-green-600 bg-green-50';
+        if (score >= 50) return 'text-emerald-600 bg-emerald-50';
+        if (score >= 30) return 'text-yellow-600 bg-yellow-50';
+        return 'text-gray-600 bg-gray-50';
+    };
+
+    const getRSIColor = (rsi) => {
+        if (rsi < 25) return 'text-red-600 font-semibold';
+        if (rsi < 30) return 'text-orange-600 font-semibold';
+        if (rsi < 35) return 'text-yellow-600';
+        return 'text-gray-600';
+    };
+
+    const getChangeColor = (change) => {
+        return change < 0 ? 'text-red-400' : 'text-green-400';
+    };
+
+    return React.createElement("div", {
+        className: "min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 p-6"
+    },
+
+        React.createElement("div", { className: "max-w-7xl mx-auto" },
+
+            /* HEADER */
+            React.createElement("div", { className: "mb-8" },
+                React.createElement("div", { className: "flex items-center gap-3 mb-2" },
+                    React.createElement("svg", { className: "w-8 h-8 text-emerald-400", fill: "none", stroke: "currentColor", viewBox: "0 0 24 24" },
+                        React.createElement("path", { strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: 2, d: "M13 17H3v-2h10v2zm0-4H3v-2h10v2zm0-4H3V7h10v2z" })
                     ),
+                    React.createElement("h1", { className: "text-4xl font-bold text-white" }, "Dip Buy Scanner")
+                ),
+                React.createElement("p", { className: "text-slate-400 text-lg" }, "Real-time analysis of indexes, stocks, ETFs, commodities, leveraged ETFs, and crypto • Add custom tickers anytime")
+            ),
 
-                    // Status
-                    React.createElement(
-                        'div',
-                        { className: 'mb-6 flex flex-col sm:flex-row sm:items-center gap-4' },
-                        React.createElement(
-                            'div',
-                            { className: 'flex-1' },
-                            lastUpdate && React.createElement('p', { className: 'text-sm text-slate-400' },
-                                '📊 Last updated: ',
-                                React.createElement('span', { className: 'text-slate-300 font-mono' }, lastUpdate.toLocaleString())
-                            ),
-                            progress && React.createElement('p', { className: 'text-sm text-emerald-400 font-semibold mt-1' }, progress)
-                        ),
-                        React.createElement(
-                            'button',
-                            {
-                                onClick: handleUpdate,
-                                disabled: loading,
-                                className: `flex items-center justify-center gap-2 px-6 py-2.5 rounded-lg font-semibold transition-all whitespace-nowrap ${
-                                    loading
-                                        ? 'bg-slate-700 text-slate-300 cursor-wait opacity-75'
-                                        : 'bg-emerald-500 hover:bg-emerald-600 text-white shadow-lg hover:shadow-xl'
-                                }`
-                            },
-                            loading ? [
-                                React.createElement('svg', { key: 'spinner', className: 'w-4 h-4 animate-spin', fill: 'none', stroke: 'currentColor', viewBox: '0 0 24 24' },
-                                    React.createElement('circle', { cx: '12', cy: '12', r: '10', stroke: 'currentColor', strokeWidth: '4', fill: 'none', opacity: '0.25' }),
-                                    React.createElement('path', { fill: 'currentColor', d: 'M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z' })
-                                ),
-                                React.createElement('span', { key: 'text' }, 'Updating...')
-                            ] : [
-                                React.createElement('svg', { key: 'refresh', className: 'w-4 h-4', fill: 'none', stroke: 'currentColor', viewBox: '0 0 24 24' },
-                                    React.createElement('path', { strokeLinecap: 'round', strokeLinejoin: 'round', strokeWidth: 2, d: 'M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15' })
-                                ),
-                                React.createElement('span', { key: 'text' }, 'Update Data')
-                            ]
+            /* TWELVE DATA KEY WARNING */
+            TWELVE_DATA_API_KEY === "YOUR_TWELVE_DATA_API_KEY" && React.createElement("div", {
+                className: "mb-6 p-4 bg-amber-900/40 border border-amber-600 rounded-lg text-amber-200"
+            }, "⚠️ Set TWELVE_DATA_API_KEY in the script before updating - index prices (S&P 500, Nasdaq 100, Nikkei, Hang Seng, Shanghai) will fail without a real key. Get a free key at twelvedata.com."),
+
+            /* STATUS */
+            React.createElement("div", { className: "mb-6 flex justify-between items-start" },
+                React.createElement("div", null,
+                    lastUpdate && React.createElement("p", { className: "text-slate-400" },
+                        "📊 Last updated: ", React.createElement("span", { className: "text-slate-300" }, lastUpdate.toLocaleString('en-AU'))
+                    ),
+                    progress && React.createElement("p", { className: "text-emerald-400 font-semibold mt-1" }, progress)
+                ),
+                React.createElement("button", {
+                    onClick: handleUpdate,
+                    disabled: loading,
+                    className: `flex items-center gap-2 px-6 py-3 rounded-lg font-medium transition-all ${
+                        loading
+                            ? 'bg-slate-600 text-slate-300 cursor-wait'
+                            : 'bg-emerald-500 hover:bg-emerald-600 text-white'
+                    }`
+                },
+                    loading ? React.createElement("span", { className: "animate-spin" }, "⟳") : React.createElement("span", null, "🔄"),
+                    loading ? "Updating..." : "Update Data"
+                )
+            ),
+
+            /* ADD CUSTOM TICKER */
+            React.createElement("div", { className: "mb-6 p-4 bg-slate-800/50 border border-slate-700 rounded-lg" },
+                React.createElement("div", { className: "flex gap-3 flex-wrap items-end" },
+                    React.createElement("div", null,
+                        React.createElement("label", { className: "block text-sm text-slate-300 mb-2" }, "Ticker Symbol"),
+                        React.createElement("input", {
+                            type: "text",
+                            value: newTickerInput,
+                            onChange: (e) => setNewTickerInput(e.target.value.toUpperCase()),
+                            onKeyPress: (e) => e.key === 'Enter' && handleAddTicker(),
+                            placeholder: "e.g., TSLA",
+                            className: "px-3 py-2 bg-slate-700 text-white rounded border border-slate-600 focus:outline-none focus:border-emerald-500 w-28"
+                        })
+                    ),
+                    React.createElement("div", null,
+                        React.createElement("label", { className: "block text-sm text-slate-300 mb-2" }, "Label (Optional)"),
+                        React.createElement("input", {
+                            type: "text",
+                            value: newTickerName,
+                            onChange: (e) => setNewTickerName(e.target.value),
+                            onKeyPress: (e) => e.key === 'Enter' && handleAddTicker(),
+                            placeholder: "e.g., My Dividend Stock",
+                            className: "px-3 py-2 bg-slate-700 text-white rounded border border-slate-600 focus:outline-none focus:border-emerald-500 w-48"
+                        })
+                    ),
+                    React.createElement("div", null,
+                        React.createElement("label", { className: "block text-sm text-slate-300 mb-2" }, "Type"),
+                        React.createElement("select", {
+                            value: newTickerType,
+                            onChange: (e) => setNewTickerType(e.target.value),
+                            className: "px-3 py-2 bg-slate-700 text-white rounded border border-slate-600 focus:outline-none focus:border-emerald-500"
+                        },
+                            React.createElement("option", { value: "stock" }, "Stock"),
+                            React.createElement("option", { value: "etf" }, "ETF"),
+                            React.createElement("option", { value: "index" }, "Index (Twelve Data)"),
+                            React.createElement("option", { value: "commodity" }, "Commodity"),
+                            React.createElement("option", { value: "leveraged" }, "Leveraged"),
+                            React.createElement("option", { value: "crypto" }, "Crypto")
                         )
                     ),
-
-                    // Error
-                    error && React.createElement(
-                        'div',
-                        { className: 'mb-6 bg-red-900/20 border border-red-700/50 rounded-lg p-4 flex gap-3' },
-                        React.createElement('svg', {
-                            className: 'w-5 h-5 text-red-400 flex-shrink-0 mt-0.5',
-                            fill: 'currentColor',
-                            viewBox: '0 0 20 20'
-                        }, React.createElement('path', { fillRule: 'evenodd', d: 'M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zm-1 9a1 1 0 100-2 1 1 0 000 2z', clipRule: 'evenodd' })),
-                        React.createElement('div', { className: 'text-sm text-red-300' }, error)
-                    ),
-
-                    // Filters
-                    React.createElement(
-                        'div',
-                        { className: 'mb-6 flex gap-2 flex-wrap' },
-                        [
-                            { value: 'all', label: 'All Assets' },
-                            { value: 'stock', label: 'Stocks' },
-                            { value: 'index', label: 'Indexes' },
-                            { value: 'crypto', label: 'Crypto' },
-                        ].map((type) =>
-                            React.createElement(
-                                'button',
-                                {
-                                    key: type.value,
-                                    onClick: () => setFilterAssetType(type.value),
-                                    className: `px-4 py-2 rounded-lg font-medium transition-all text-sm ${
-                                        filterAssetType === type.value
-                                            ? 'bg-emerald-500 text-white'
-                                            : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
-                                    }`
-                                },
-                                type.label
+                    React.createElement("button", {
+                        onClick: handleAddTicker,
+                        className: "px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded font-medium transition-all"
+                    }, "+ Add Ticker")
+                ),
+                React.createElement("div", { className: "mt-4 flex flex-wrap gap-2" },
+                    customTickers.length > 0 && React.createElement("div", null,
+                        React.createElement("p", { className: "text-sm text-slate-400 mb-2" }, `Custom Tickers (${customTickers.length}):`),
+                        customTickers.map((ticker) =>
+                            React.createElement("span", {
+                                key: ticker.symbol,
+                                className: "inline-flex items-center gap-2 px-3 py-1 bg-blue-900/50 border border-blue-700 text-blue-300 rounded-full text-sm"
+                            },
+                                React.createElement("div", null,
+                                    React.createElement("span", { className: "font-bold" }, ticker.symbol),
+                                    ticker.readableName !== ticker.symbol && React.createElement("span", { className: "text-blue-200 text-xs ml-1" }, `(${ticker.readableName})`)
+                                ),
+                                React.createElement("button", {
+                                    onClick: () => handleRemoveTicker(ticker.symbol),
+                                    className: "ml-1 font-bold hover:text-blue-100 cursor-pointer"
+                                }, "×")
                             )
                         )
-                    ),
+                    )
+                )
+            ),
 
-                    // Table
-                    filteredAssets.length > 0 ? React.createElement(
-                        'div',
-                        { className: 'overflow-x-auto rounded-lg border border-slate-700 bg-slate-900/50 backdrop-blur' },
-                        React.createElement(
-                            'table',
-                            { className: 'w-full text-xs sm:text-sm' },
-                            React.createElement(
-                                'thead',
-                                null,
-                                React.createElement(
-                                    'tr',
-                                    { className: 'border-b border-slate-700 bg-slate-900' },
-                                    React.createElement('th', { className: 'px-3 sm:px-4 py-3 text-left text-slate-300 font-semibold cursor-pointer hover:text-white', onClick: () => setSortConfig({ key: 'name', direction: sortConfig.key === 'name' ? 'asc' : 'desc' }) }, 'Asset'),
-                                    React.createElement('th', { className: 'px-3 sm:px-4 py-3 text-right text-slate-300 font-semibold cursor-pointer hover:text-white', onClick: () => setSortConfig({ key: 'currentPrice', direction: sortConfig.key === 'currentPrice' ? 'asc' : 'desc' }) }, 'Price'),
-                                    React.createElement('th', { className: 'px-3 sm:px-4 py-3 text-right text-slate-300 font-semibold cursor-pointer hover:text-white', onClick: () => setSortConfig({ key: 'priceChange24h', direction: sortConfig.key === 'priceChange24h' ? 'asc' : 'desc' }) }, '24h'),
-                                    React.createElement('th', { className: 'px-3 sm:px-4 py-3 text-center text-slate-300 font-semibold' }, 'RSI'),
-                                    React.createElement('th', { className: 'px-3 sm:px-4 py-3 text-center text-slate-300 font-semibold' }, 'Vol'),
-                                    React.createElement('th', { className: 'hidden sm:table-cell px-3 sm:px-4 py-3 text-center text-slate-300 font-semibold' }, 'P/E'),
-                                    React.createElement('th', { className: 'px-3 sm:px-4 py-3 text-center text-slate-300 font-semibold cursor-pointer hover:text-white', onClick: () => setSortConfig({ key: 'dipScore', direction: sortConfig.key === 'dipScore' ? 'asc' : 'desc' }) }, 'Score')
-                                )
-                            ),
-                            React.createElement(
-                                'tbody',
-                                null,
-                                filteredAssets.map((asset) =>
-                                    React.createElement(
-                                        'tr',
-                                        { key: asset.id, className: 'border-b border-slate-800 hover:bg-slate-800/50 transition-colors' },
-                                        React.createElement(
-                                            'td',
-                                            { className: 'px-3 sm:px-4 py-3' },
-                                            React.createElement('div', null,
-                                                React.createElement('div', { className: 'font-semibold text-white' }, asset.name),
-                                                React.createElement('div', { className: 'text-xs text-slate-500 capitalize' }, asset.type)
-                                            )
-                                        ),
-                                        React.createElement('td', { className: 'px-3 sm:px-4 py-3 text-right text-white font-mono text-xs sm:text-sm' }, '$' + asset.currentPrice.toLocaleString(undefined, { maximumFractionDigits: 2, minimumFractionDigits: 2 })),
-                                        React.createElement('td', { className: `px-3 sm:px-4 py-3 text-right font-mono text-xs sm:text-sm ${getPriceChangeColor(asset.priceChange24h)}` }, (asset.priceChange24h > 0 ? '+' : '') + asset.priceChange24h.toFixed(2) + '%'),
-                                        React.createElement('td', { className: `px-3 sm:px-4 py-3 text-center font-mono text-xs sm:text-sm ${getRSIColor(asset.rsi)}` }, asset.rsi.toFixed(0)),
-                                        React.createElement('td', { className: 'px-3 sm:px-4 py-3 text-center font-mono text-xs sm:text-sm text-slate-400' }, asset.volumeRatio.toFixed(2) + 'x'),
-                                        React.createElement('td', { className: 'hidden sm:table-cell px-3 sm:px-4 py-3 text-center font-mono text-xs sm:text-sm text-slate-400' }, asset.pe ? asset.pe.toFixed(1) : '—'),
-                                        React.createElement('td', { className: 'px-3 sm:px-4 py-3 text-center' },
-                                            React.createElement('div', { className: `inline-block rounded-lg px-2 sm:px-3 py-1 text-xs sm:text-sm font-bold border ${getDipScoreColor(asset.dipScore)}` }, asset.dipScore)
-                                        )
+            /* FILTERS */
+            React.createElement("div", { className: "mb-6 flex gap-2 flex-wrap" },
+                ['all', 'index', 'stock', 'etf', 'commodity', 'leveraged', 'crypto'].map((type) =>
+                    React.createElement("button", {
+                        key: type,
+                        onClick: () => setFilterType(type),
+                        className: `px-4 py-2 rounded-lg font-medium transition-all ${
+                            filterType === type
+                                ? 'bg-emerald-500 text-white'
+                                : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+                        }`
+                    },
+                        type === 'all' ? 'All Assets' : type.charAt(0).toUpperCase() + type.slice(1) + 's'
+                    )
+                )
+            ),
+
+            /* TABLE */
+            filteredAssets.length > 0 ? React.createElement("div", { className: "overflow-x-auto rounded-lg border border-slate-700 bg-slate-800/50 backdrop-blur" },
+                React.createElement("table", { className: "w-full text-sm" },
+                    React.createElement("thead", null,
+                        React.createElement("tr", { className: "border-b border-slate-700 bg-slate-800" },
+                            React.createElement("th", { className: "px-4 py-3 text-center text-slate-300 font-semibold w-12" }, "#"),
+                            React.createElement("th", { className: "px-4 py-3 text-left text-slate-300 font-semibold cursor-pointer hover:text-white", onClick: () => setSortConfig({ key: 'symbol', direction: 'desc' }) }, "Ticker"),
+                            React.createElement("th", { className: "px-4 py-3 text-left text-slate-300 font-semibold cursor-pointer hover:text-white", onClick: () => setSortConfig({ key: 'readableName', direction: 'desc' }) }, "Name"),
+                            React.createElement("th", { className: "px-4 py-3 text-right text-slate-300 font-semibold cursor-pointer hover:text-white", onClick: () => setSortConfig({ key: 'currentPrice', direction: 'desc' }) }, "Price"),
+                            React.createElement("th", { className: "px-4 py-3 text-right text-slate-300 font-semibold cursor-pointer hover:text-white", onClick: () => setSortConfig({ key: 'priceChange24h', direction: 'asc' }) }, "24h Change"),
+                            React.createElement("th", { className: "px-4 py-3 text-center text-slate-300 font-semibold cursor-pointer hover:text-white", onClick: () => setSortConfig({ key: 'rsi', direction: 'asc' }) }, "RSI"),
+                            React.createElement("th", { className: "px-4 py-3 text-center text-slate-300 font-semibold" }, "Vol Signal"),
+                            React.createElement("th", { className: "px-4 py-3 text-center text-slate-300 font-semibold cursor-pointer hover:text-white", onClick: () => setSortConfig({ key: 'dipScore', direction: 'desc' }) }, "Dip Score")
+                        )
+                    ),
+                    React.createElement("tbody", null,
+                        filteredAssets.map((asset, index) =>
+                            React.createElement("tr", {
+                                key: asset.id,
+                                className: "border-b border-slate-700/50 hover:bg-slate-700/30 transition-colors"
+                            },
+                                React.createElement("td", { className: "px-4 py-3 text-center text-slate-500 font-semibold w-12" },
+                                    index + 1
+                                ),
+                                React.createElement("td", { className: "px-4 py-3 font-semibold text-white" },
+                                    asset.symbol
+                                ),
+                                React.createElement("td", { className: "px-4 py-3 text-slate-300" },
+                                    asset.readableName || asset.name
+                                ),
+                                React.createElement("td", { className: "px-4 py-3 text-right text-white font-mono" },
+                                    "$" + asset.currentPrice.toLocaleString(undefined, { maximumFractionDigits: 2, minimumFractionDigits: 2 })
+                                ),
+                                React.createElement("td", { className: `px-4 py-3 text-right font-mono ${getChangeColor(asset.priceChange24h)}` },
+                                    (asset.priceChange24h > 0 ? '+' : '') + asset.priceChange24h.toFixed(2) + "%"
+                                ),
+                                React.createElement("td", { className: `px-4 py-3 text-center font-mono ${getRSIColor(asset.rsi)}` },
+                                    asset.rsi.toFixed(0)
+                                ),
+                                React.createElement("td", { className: "px-4 py-3 text-center font-mono text-slate-300" },
+                                    asset.volumeRatio.toFixed(2) + "x"
+                                ),
+                                React.createElement("td", { className: "px-4 py-3" },
+                                    React.createElement("div", { className: `rounded-lg px-3 py-2 text-center font-bold font-mono ${getDipScoreColor(asset.dipScore)}` },
+                                        Math.round(asset.dipScore) + "/100"
                                     )
                                 )
                             )
                         )
-                    ) : React.createElement(
-                        'div',
-                        { className: 'text-center py-12 bg-slate-900/50 rounded-lg border border-slate-700' },
-                        React.createElement('p', { className: 'text-slate-400 mb-3' }, 'No data loaded yet'),
-                        React.createElement(
-                            'button',
-                            {
-                                onClick: handleUpdate,
-                                className: 'px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg font-semibold text-sm transition-colors'
-                            },
-                            'Click to Fetch Live Data'
-                        )
-                    ),
-
-                    // Info
-                    React.createElement(
-                        'div',
-                        { className: 'mt-8 bg-slate-800/50 rounded-lg p-4 border border-slate-700' },
-                        React.createElement('p', { className: 'text-slate-300 text-sm' },
-                            React.createElement('strong', null, '💡 How it works: '),
-                            'Real-time crypto data from CoinGecko. Stock & index data shows realistic market patterns. Scores calculate based on RSI, momentum, volume & valuation.'
-                        )
                     )
                 )
-            );
-        }
+            ) : React.createElement("div", { className: "text-center py-12 bg-slate-800/50 rounded-lg border border-slate-700" },
+                React.createElement("p", { className: "text-slate-400 mb-4" }, "No data loaded yet. Click 'Update Data' to fetch live market information.")
+            ),
 
-        const root = ReactDOM.createRoot(document.getElementById('root'));
-        root.render(React.createElement(DipBuyDashboard));
-    </script>
+            /* INFO BOX */
+            React.createElement("div", { className: "mt-8 bg-slate-700/50 border border-slate-600 rounded-lg p-4" },
+                React.createElement("div", { className: "text-sm text-slate-300" },
+                    React.createElement("strong", null, "How it works: "),
+                    "Click 'Update Data' to fetch live prices - real index levels (S&P 500, Nasdaq 100, Nikkei, Hang Seng, Shanghai) from Twelve Data, stocks/ETFs/commodities/leveraged funds from Finnhub, and crypto from CoinGecko. All data is processed in your browser and cached locally."
+                )
+            )
+        )
+    );
+}
+
+ReactDOM.createRoot(document.getElementById("root"))
+    .render(React.createElement(DipBuyDashboard));
+</script>
+
 </body>
 </html>
