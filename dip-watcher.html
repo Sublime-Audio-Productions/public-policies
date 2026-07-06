@@ -24,24 +24,26 @@ const { useState, useEffect, useMemo } = React;
 const icons = window.lucide || {};
 /* =========================
    CONFIG
-   Finnhub -> stocks, ETFs, commodities, leveraged
-   Twelve Data -> real index-level prices (Finnhub free tier doesn't include these)
+   Finnhub -> stocks, ETFs, commodities, leveraged, and now index proxies
    CoinGecko -> crypto
+   (Twelve Data removed - the free/basic plan does not expose raw index-level
+   instruments, only ETFs/funds that track them, so we use those ETFs directly
+   through the Finnhub path instead.)
 ========================= */
 const FINNHUB_API_KEY = "d90f5mhr01qk8bflc40gd90f5mhr01qk8bflc410";
-const TWELVE_DATA_API_KEY = "8227ab4214644339b71234be88cfd043"; // get a free key at twelvedata.com (800 credits/day free)
 
 /* =========================
-   INDEX DEFINITIONS (Twelve Data symbols)
-   Verify these against Twelve Data's symbol search if any come back empty -
-   coverage/naming can vary by plan.
+   INDEX DEFINITIONS
+   Real index-level data isn't available on our API plan, so we track
+   highly-correlated ETF proxies instead through the same Finnhub quote
+   endpoint used for stocks. Prices/movement will closely mirror the index.
 ========================= */
 const INDEXES = [
-    { symbol: "^GSPC",  name: "S&P 500" },
-    { symbol: "^NDX",  name: "NASDAQ 100" },
-    { symbol: "^N225", name: "Nikkei 225 (Japan)" },
-    { symbol: "^HSI",  name: "Hang Seng (Hong Kong)" },
-    { symbol: "^SSEC", name: "Shanghai Composite (China)" }
+    { symbol: "VOO",  name: "S&P 500 (via Vanguard S&P 500 ETF)" },
+    { symbol: "QQQ",  name: "NASDAQ 100 (via Invesco QQQ)" },
+    { symbol: "EWJ",  name: "Nikkei 225 / Japan (via iShares MSCI Japan ETF)" },
+    { symbol: "EWH",  name: "Hang Seng / Hong Kong (via iShares MSCI Hong Kong ETF)" },
+    { symbol: "MCHI", name: "Shanghai Composite / China (via iShares MSCI China ETF)" }
 ];
 
 /* =========================
@@ -82,7 +84,7 @@ const SYMBOLS = {
    READABLE NAMES MAPPING
 ========================= */
 const NAMES = {
-    // Global Indexes (Twelve Data symbols)
+    // Global Index proxies (ETF tickers)
     ...Object.fromEntries(INDEXES.map(i => [i.symbol, i.name])),
 
     // Stocks
@@ -182,7 +184,7 @@ const estimateRSI = (change24h) => {
 
 /* =========================
    FETCH STOCK DATA (FINNHUB)
-   Used for stocks, ETFs, commodities, leveraged ETFs
+   Used for stocks, ETFs, commodities, leveraged ETFs, and index proxies
 ========================= */
 const fetchStockData = async (symbol) => {
     try {
@@ -217,55 +219,6 @@ const fetchStockData = async (symbol) => {
         };
     } catch (e) {
         console.error(`Error fetching ${symbol}:`, e);
-        return null;
-    }
-};
-
-/* =========================
-   FETCH INDEX DATA (TWELVE DATA)
-   Real index-level prices - Finnhub's free tier doesn't include these
-========================= */
-const fetchIndexData = async (symbol) => {
-    try {
-        const res = await fetch(
-            `https://api.twelvedata.com/quote?symbol=${symbol}&apikey=${TWELVE_DATA_API_KEY}`
-        );
-        const data = await res.json();
-
-        // Twelve Data returns {"status":"error", ...} for bad symbols/keys/quota
-        if (!data || data.status === "error" || data.close === undefined) {
-            console.error(`Twelve Data error for ${symbol}:`, data && data.message);
-            return null;
-        }
-
-        const currentPrice = parseFloat(data.close);
-        const previousClose = parseFloat(data.previous_close) || currentPrice;
-        const change24h = previousClose
-            ? ((currentPrice - previousClose) / previousClose) * 100
-            : parseFloat(data.percent_change) || 0;
-        const volume = parseFloat(data.volume) || 0;
-        const high52 = data.fifty_two_week ? parseFloat(data.fifty_two_week.high) : currentPrice;
-        const low52 = data.fifty_two_week ? parseFloat(data.fifty_two_week.low) : currentPrice;
-
-        return {
-            id: symbol,
-            symbol,
-            name: data.name || symbol,
-            type: "index",
-            currentPrice,
-            priceChange24h: change24h,
-            volume24h: volume,
-            volumeMA20Day: Math.max(volume * 0.85, 1),
-            rsi: estimateRSI(change24h),
-            ma200Day: null,
-            pe: null,
-            dividendYield: 0,
-            price52WkHigh: isNaN(high52) ? currentPrice : high52,
-            price52WkLow: isNaN(low52) ? currentPrice : low52,
-            fetchedAt: new Date()
-        };
-    } catch (e) {
-        console.error(`Error fetching index ${symbol}:`, e);
         return null;
     }
 };
@@ -439,23 +392,8 @@ function DipBuyDashboard() {
         let current = 0;
         const total = allSymbols.length;
 
-        // Fetch indexes (Twelve Data)
-        for (const item of allSymbols.filter(x => x.type === 'index')) {
-            setProgress(`Fetching... (${current + 1}/${total}) ${item.symbol}`);
-            const data = await fetchIndexData(item.symbol);
-            if (data) {
-                data.readableName = customNameMap[item.symbol] || NAMES[item.symbol] || data.name;
-                allAssets.push(data);
-            } else {
-                failed.push(item.symbol);
-            }
-            current++;
-            // Twelve Data free tier is rate-limited (8 req/min) - space these out
-            await new Promise(resolve => setTimeout(resolve, 800));
-        }
-
-        // Fetch stocks, ETFs, commodities, leveraged (Finnhub)
-        for (const item of allSymbols.filter(x => !['crypto', 'index'].includes(x.type))) {
+        // Fetch indexes (proxy ETFs), stocks, ETFs, commodities, leveraged - all via Finnhub
+        for (const item of allSymbols.filter(x => !['crypto'].includes(x.type))) {
             setProgress(`Fetching... (${current + 1}/${total}) ${item.symbol}`);
             const data = await fetchStockData(item.symbol);
             if (data) {
@@ -562,11 +500,6 @@ function DipBuyDashboard() {
                 React.createElement("p", { className: "text-slate-400 text-lg" }, "Real-time analysis of indexes, stocks, ETFs, commodities, leveraged ETFs, and crypto • Add custom tickers anytime")
             ),
 
-            /* TWELVE DATA KEY WARNING */
-            TWELVE_DATA_API_KEY === "YOUR_TWELVE_DATA_API_KEY" && React.createElement("div", {
-                className: "mb-6 p-4 bg-amber-900/40 border border-amber-600 rounded-lg text-amber-200"
-            }, "⚠️ Set TWELVE_DATA_API_KEY in the script before updating - index prices (S&P 500, Nasdaq 100, Nikkei, Hang Seng, Shanghai) will fail without a real key. Get a free key at twelvedata.com."),
-
             /* STATUS */
             React.createElement("div", { className: "mb-6 flex justify-between items-start" },
                 React.createElement("div", null,
@@ -623,7 +556,7 @@ function DipBuyDashboard() {
                         },
                             React.createElement("option", { value: "stock" }, "Stock"),
                             React.createElement("option", { value: "etf" }, "ETF"),
-                            React.createElement("option", { value: "index" }, "Index (Twelve Data)"),
+                            React.createElement("option", { value: "index" }, "Index (proxy ETF)"),
                             React.createElement("option", { value: "commodity" }, "Commodity"),
                             React.createElement("option", { value: "leveraged" }, "Leveraged"),
                             React.createElement("option", { value: "crypto" }, "Crypto")
@@ -732,7 +665,7 @@ function DipBuyDashboard() {
             React.createElement("div", { className: "mt-8 bg-slate-700/50 border border-slate-600 rounded-lg p-4" },
                 React.createElement("div", { className: "text-sm text-slate-300" },
                     React.createElement("strong", null, "How it works: "),
-                    "Click 'Update Data' to fetch live prices - real index levels (S&P 500, Nasdaq 100, Nikkei, Hang Seng, Shanghai) from Twelve Data, stocks/ETFs/commodities/leveraged funds from Finnhub, and crypto from CoinGecko. All data is processed in your browser and cached locally."
+                    "Click 'Update Data' to fetch live prices - indexes are tracked via highly-correlated ETF proxies (VOO, QQQ, EWJ, EWH, MCHI), and stocks/ETFs/commodities/leveraged funds all come from Finnhub, while crypto comes from CoinGecko. All data is processed in your browser and cached locally."
                 )
             )
         )
