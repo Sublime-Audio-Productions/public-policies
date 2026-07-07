@@ -29,15 +29,40 @@ const { TrendingDown, TrendingUp, AlertCircle, Loader, RefreshCw } = lucide;
 const FINNHUB_API_KEY = "d90f5mhr01qk8bflc40gd90f5mhr01qk8bflc410";
 
 /* =========================
+   INDEX-LEVEL DISPLAY MULTIPLIERS
+   -----------------------------------------------------------
+   Finnhub's free tier only returns ETF share prices, not real
+   index levels (^GSPC, ^NDX, etc. require a paid plan). SPY and
+   QQQ track their indexes closely enough that a static
+   multiplier gives a good approximation of the actual index
+   level for DISPLAY ONLY.
+
+   These do NOT affect priceChange24h, RSI, volume ratio, or
+   dipScore — all of that math is already scale-invariant
+   (it's based on % change and ratios), so it stays accurate
+   whether you multiply the price or not.
+
+   Recalibrate occasionally: divide the real index level by the
+   ETF price to check these are still close.
+   (Roughly current as of Jul 2026: SPX ~7483 / SPY ~744.78 ≈ 10.05;
+   NDX ~ QQQ * ~32-33, but QQQ's divisor isn't fixed the way SPY's
+   is, so check this one more often.)
+========================= */
+const INDEX_MULTIPLIER = {
+    "SPY": 10,
+    "QQQ": 32.5
+};
+
+/* =========================
    SYMBOLS TO TRACK
 ========================= */
 const SYMBOLS = {
     indexes: [
-        "SPY",      // S&P 500
-        "QQQ",      // NASDAQ 100
-        "EWJ",     // Nikkei 225 (Japan)
-        "EWH",      // Hang Seng 50 (Hong Kong)
-        "XIN9.FGI"       // China 50 Index
+        "SPY",      // S&P 500 (ETF proxy, scaled ~10x for display)
+        "QQQ",      // Nasdaq 100 (ETF proxy, scaled ~32.5x for display)
+        "EWJ",      // MSCI Japan (NOT the Nikkei 225 - different index methodology)
+        "EWH",      // MSCI Hong Kong (NOT the Hang Seng - different index methodology)
+        "MCHI"      // MSCI China (replaces XIN9.FGI, which Finnhub's free tier can't quote)
     ],
     stocks: [
         "AAPL", "MSFT", "GOOGL", "AMZN", "TSLA",
@@ -72,13 +97,13 @@ const SYMBOLS = {
    READABLE NAMES MAPPING
 ========================= */
 const NAMES = {
-    // Global Indexes
+    // Global Indexes / regional proxies
     "SPY": "S&P 500",
-    "QQQ": "NASDAQ 100",
-    "EWJ": "Nikkei 225 (Japan)",
-    "EWH": "Hang Seng 50 (Hong Kong)",
-    "XIN9.FGI": "China 50 Index",
-    
+    "QQQ": "Nasdaq 100",
+    "EWJ": "MSCI Japan",
+    "EWH": "MSCI Hong Kong",
+    "MCHI": "MSCI China",
+
     // Stocks
     "AAPL": "Apple Inc.",
     "MSFT": "Microsoft",
@@ -95,7 +120,7 @@ const NAMES = {
     "QCOM": "Qualcomm",
     "AVGO": "Broadcom",
     "PYPL": "PayPal",
-    
+
     // Regular ETFs
     "IVV": "iShares Core S&P 500",
     "VOO": "Vanguard S&P 500",
@@ -107,12 +132,12 @@ const NAMES = {
     "XLF": "Financial Select",
     "XLE": "Energy Select",
     "XLV": "Healthcare Select",
-    
+
     // Commodities
     "USO": "Oil (Crude)",
     "UNG": "Natural Gas",
     "DBC": "Commodities Bundle",
-    
+
     // Leveraged/Inverse ETFs
     "FAS": "3x Financials (Bullish)",
     "NAIL": "3x Homebuilders (Bullish)",
@@ -121,7 +146,7 @@ const NAMES = {
     "BLOK": "Blockchain ETF",
     "TECL": "3x Tech Leverage (Bullish)",
     "TQQQ": "3x NASDAQ Leverage (Bullish)",
-    
+
     // Crypto
     "bitcoin": "Bitcoin",
     "ethereum": "Ethereum",
@@ -138,7 +163,7 @@ const NAMES = {
 ========================= */
 const calculateRSI = (prices) => {
     if (!prices || prices.length < 14) return 50;
-    
+
     let gains = 0;
     let losses = 0;
     const period = Math.min(14, prices.length);
@@ -152,7 +177,7 @@ const calculateRSI = (prices) => {
     const avgGain = gains / period;
     const avgLoss = losses / period;
     if (avgLoss === 0) return avgGain > 0 ? 100 : 0;
-    
+
     const rs = avgGain / avgLoss;
     const rsi = 100 - 100 / (1 + rs);
 
@@ -261,6 +286,11 @@ const fetchCryptoData = async (coinId) => {
 
 /* =========================
    CALCULATE DIP SCORE (IMPROVED)
+   -----------------------------------------------------------
+   Unchanged from before - this operates entirely on % change,
+   RSI, and volume ratio, none of which depend on whether the
+   underlying price is an ETF share price or a scaled index
+   level, so it stays correct regardless of INDEX_MULTIPLIER.
 ========================= */
 const calculateDipScore = (asset) => {
     let score = 0;
@@ -308,6 +338,31 @@ const calculateDipScore = (asset) => {
 };
 
 /* =========================
+   DISPLAY-SCALE HELPER
+   -----------------------------------------------------------
+   Applies INDEX_MULTIPLIER (if any) to price fields that are
+   shown to the user. Raw currentPrice/high/low used for
+   calculations elsewhere are left untouched.
+========================= */
+const getDisplayPrice = (asset) => {
+    const multiplier = INDEX_MULTIPLIER[asset.symbol];
+    if (!multiplier) {
+        return {
+            displayPrice: asset.currentPrice,
+            displayHigh: asset.price52WkHigh,
+            displayLow: asset.price52WkLow,
+            isIndexScaled: false
+        };
+    }
+    return {
+        displayPrice: asset.currentPrice * multiplier,
+        displayHigh: asset.price52WkHigh * multiplier,
+        displayLow: asset.price52WkLow * multiplier,
+        isIndexScaled: true
+    };
+};
+
+/* =========================
    MAIN APP
 ========================= */
 function DipBuyDashboard() {
@@ -338,22 +393,22 @@ function DipBuyDashboard() {
 
     const handleAddTicker = () => {
         if (!newTickerInput.trim()) return;
-        
+
         const ticker = newTickerInput.trim().toUpperCase();
-        
+
         // Check if already exists
         if (customTickers.some(t => t.symbol === ticker)) {
             alert(`${ticker} is already being tracked!`);
             setNewTickerInput("");
             return;
         }
-        
+
         const newTicker = {
             symbol: ticker,
             type: newTickerType,
             readableName: newTickerName.trim() || NAMES[ticker] || ticker
         };
-        
+
         setCustomTickers([...customTickers, newTicker]);
         setNewTickerInput("");
         setNewTickerName("");
@@ -435,11 +490,18 @@ function DipBuyDashboard() {
     };
 
     const assetsWithScores = useMemo(() => {
-        return assets.map((asset) => ({
-            ...asset,
-            dipScore: calculateDipScore(asset),
-            volumeRatio: asset.volumeMA20Day > 0 ? asset.volume24h / asset.volumeMA20Day : 1,
-        }));
+        return assets.map((asset) => {
+            const { displayPrice, displayHigh, displayLow, isIndexScaled } = getDisplayPrice(asset);
+            return {
+                ...asset,
+                dipScore: calculateDipScore(asset),
+                volumeRatio: asset.volumeMA20Day > 0 ? asset.volume24h / asset.volumeMA20Day : 1,
+                displayPrice,
+                displayHigh,
+                displayLow,
+                isIndexScaled
+            };
+        });
     }, [assets]);
 
     const filteredAssets = useMemo(() => {
@@ -516,6 +578,13 @@ function DipBuyDashboard() {
                     loading ? React.createElement("span", { className: "animate-spin" }, "⟳") : React.createElement("span", null, "🔄"),
                     loading ? "Updating..." : "Update Data"
                 )
+            ),
+
+            /* NOTE ABOUT INDEX PROXIES */
+            React.createElement("div", { className: "mb-6 p-4 bg-amber-900/20 border border-amber-700/50 rounded-lg text-sm text-amber-200" },
+                React.createElement("strong", null, "Note on index rows: "),
+                "SPY and QQQ prices are scaled (×10 and ×32.5) to approximate the S&P 500 and Nasdaq 100 index levels — these multipliers drift slowly over time and should be rechecked occasionally. ",
+                "MSCI Japan and MSCI Hong Kong are correlated with, but not identical to, the Nikkei 225 and Hang Seng — no ratio makes those equivalent, since they're differently constructed indexes."
             ),
 
             /* ADD CUSTOM TICKER */
@@ -609,7 +678,7 @@ function DipBuyDashboard() {
                             React.createElement("th", { className: "px-4 py-3 text-center text-slate-300 font-semibold w-12" }, "#"),
                             React.createElement("th", { className: "px-4 py-3 text-left text-slate-300 font-semibold cursor-pointer hover:text-white", onClick: () => setSortConfig({ key: 'symbol', direction: 'desc' }) }, "Ticker"),
                             React.createElement("th", { className: "px-4 py-3 text-left text-slate-300 font-semibold cursor-pointer hover:text-white", onClick: () => setSortConfig({ key: 'readableName', direction: 'desc' }) }, "Name"),
-                            React.createElement("th", { className: "px-4 py-3 text-right text-slate-300 font-semibold cursor-pointer hover:text-white", onClick: () => setSortConfig({ key: 'currentPrice', direction: 'desc' }) }, "Price"),
+                            React.createElement("th", { className: "px-4 py-3 text-right text-slate-300 font-semibold cursor-pointer hover:text-white", onClick: () => setSortConfig({ key: 'displayPrice', direction: 'desc' }) }, "Price"),
                             React.createElement("th", { className: "px-4 py-3 text-right text-slate-300 font-semibold cursor-pointer hover:text-white", onClick: () => setSortConfig({ key: 'priceChange24h', direction: 'asc' }) }, "24h Change"),
                             React.createElement("th", { className: "px-4 py-3 text-center text-slate-300 font-semibold cursor-pointer hover:text-white", onClick: () => setSortConfig({ key: 'rsi', direction: 'asc' }) }, "RSI"),
                             React.createElement("th", { className: "px-4 py-3 text-center text-slate-300 font-semibold" }, "Vol Signal"),
@@ -629,10 +698,14 @@ function DipBuyDashboard() {
                                     asset.symbol
                                 ),
                                 React.createElement("td", { className: "px-4 py-3 text-slate-300" },
-                                    asset.readableName || asset.name
+                                    asset.readableName || asset.name,
+                                    asset.isIndexScaled && React.createElement("span", {
+                                        className: "ml-2 text-xs text-amber-400/80 align-middle",
+                                        title: "Displayed price is the ETF price scaled by a fixed multiplier to approximate the index level"
+                                    }, "≈ index")
                                 ),
                                 React.createElement("td", { className: "px-4 py-3 text-right text-white font-mono" },
-                                    "$" + asset.currentPrice.toLocaleString(undefined, { maximumFractionDigits: 2, minimumFractionDigits: 2 })
+                                    "$" + asset.displayPrice.toLocaleString(undefined, { maximumFractionDigits: 2, minimumFractionDigits: 2 })
                                 ),
                                 React.createElement("td", { className: `px-4 py-3 text-right font-mono ${getChangeColor(asset.priceChange24h)}` },
                                     (asset.priceChange24h > 0 ? '+' : '') + asset.priceChange24h.toFixed(2) + "%"
@@ -660,7 +733,7 @@ function DipBuyDashboard() {
             React.createElement("div", { className: "mt-8 bg-slate-700/50 border border-slate-600 rounded-lg p-4" },
                 React.createElement("div", { className: "text-sm text-slate-300" },
                     React.createElement("strong", null, "How it works: "),
-                    "Click 'Update Data' to fetch real market prices from Finnhub (stocks, ETFs, commodities, leveraged) and CoinGecko (crypto). All data is processed in your browser and cached locally."
+                    "Click 'Update Data' to fetch real market prices from Finnhub (stocks, ETFs, commodities, leveraged) and CoinGecko (crypto). All data is processed in your browser and cached locally. Index rows (SPY, QQQ) show a scaled approximation of the underlying index level; MSCI Japan/Hong Kong are regional proxies, not the Nikkei/Hang Seng themselves."
                 )
             )
         )
