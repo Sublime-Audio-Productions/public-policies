@@ -63,14 +63,14 @@ const FINNHUB_API_KEY = "d90f5mhr01qk8bflc40gd90f5mhr01qk8bflc410";
     NDX ~29,329 / QQQ ~723 ~= 40.5
     Nikkei 225 ~70,100 / EWJ ~95 ~= 736
     Hang Seng ~23,350 / EWH ~21.2 ~= 1100
-    Shanghai Composite ~4,044 / MCHI ~50.9 ~= 79.5)
+    FTSE China A50 ~15,600 / MCHI ~50.9 ~= 307)
 ========================= */
 const INDEX_MULTIPLIER = {
     "SPY": 10,
     "QQQ": 40.5,
     "EWJ": 736,
     "EWH": 1100,
-    "MCHI": 79.5
+    "MCHI": 307
 };
 
 // What each scaled row is meant to approximate, shown as a tooltip.
@@ -79,7 +79,7 @@ const INDEX_TARGET_LABEL = {
     "QQQ": "Nasdaq 100",
     "EWJ": "Nikkei 225 (rough - EWJ tracks MSCI Japan, a different index)",
     "EWH": "Hang Seng (rough - EWH tracks MSCI Hong Kong, a different index)",
-    "MCHI": "Shanghai Composite (rough - MCHI tracks MSCI China, a different index)"
+    "MCHI": "FTSE China A50 (rough - MCHI tracks MSCI China, a different index)"
 };
 
 /* =========================
@@ -91,7 +91,7 @@ const SYMBOLS = {
         "QQQ",      // Nasdaq 100 (ETF proxy, scaled ~40.5x for display)
         "EWJ",      // MSCI Japan, scaled ~736x as a rough Nikkei 225 approximation
         "EWH",      // MSCI Hong Kong, scaled ~1100x as a rough Hang Seng approximation
-        "MCHI"      // MSCI China, scaled ~79.5x as a rough Shanghai Composite approximation (replaces XIN9.FGI, which Finnhub's free tier can't quote)
+        "MCHI"      // MSCI China, scaled ~307x as a rough FTSE China A50 approximation (replaces XIN9.FGI, which Finnhub's free tier can't quote)
     ],
     stocks: [
         "AAPL", "MSFT", "GOOGL", "AMZN", "TSLA",
@@ -267,49 +267,65 @@ const fetchStockData = async (symbol) => {
 
 /* =========================
    FETCH CRYPTO DATA (COINGECKO - FREE!)
+   -----------------------------------------------------------
+   Batched into ONE request via /coins/markets instead of one
+   request per coin. This fixes two things at once:
+
+   1. Correctness: /coins/markets always returns the real ticker
+      symbol for every coin in the response. The old per-coin
+      loop fell back to displaying the raw CoinGecko id (e.g.
+      "MONERO", "STELLAR", "AVALANCHE-2") whenever an individual
+      request got rate-limited - which reliably happened on the
+      6th-8th call in an 8-coin, 100ms-apart loop. Fetching all
+      coins in a single call removes that failure mode entirely.
+
+   2. Reliability: 1 request instead of 8 is far less likely to
+      hit CoinGecko's free-tier rate limit in the first place.
 ========================= */
-const fetchCryptoData = async (coinId) => {
+const fetchCryptoDataBatch = async (coinIds) => {
+    if (!coinIds || coinIds.length === 0) return {};
     try {
+        const idsParam = coinIds.join(',');
         const response = await fetch(
-            `https://api.coingecko.com/api/v3/coins/${coinId}?localization=false&tickers=false&market_data=true&community_data=false&developer_data=false`
+            `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=${idsParam}&price_change_percentage=24h`
         );
-
         const data = await response.json();
+        if (!Array.isArray(data)) return {};
 
-        if (!data.market_data) return null;
+        const resultMap = {};
+        data.forEach((coin) => {
+            const priceChange24h = coin.price_change_percentage_24h ?? 0;
 
-        const marketData = data.market_data;
-        const currentPrice = marketData.current_price?.usd || 0;
-        const priceChange24h = marketData.price_change_percentage_24h || 0;
+            // Estimate RSI based on price action
+            let rsi = 50;
+            if (priceChange24h < -8) rsi = 20;
+            else if (priceChange24h < -6) rsi = 25;
+            else if (priceChange24h < -4) rsi = 30;
+            else if (priceChange24h < -2) rsi = 35;
+            else if (priceChange24h > 8) rsi = 80;
 
-        // Estimate RSI based on price action
-        let rsi = 50;
-        if (priceChange24h < -8) rsi = 20;
-        else if (priceChange24h < -6) rsi = 25;
-        else if (priceChange24h < -4) rsi = 30;
-        else if (priceChange24h < -2) rsi = 35;
-        else if (priceChange24h > 8) rsi = 80;
-
-        return {
-            id: data.symbol?.toUpperCase() || coinId.toUpperCase(),
-            symbol: data.symbol?.toUpperCase() || coinId.toUpperCase(),
-            name: data.name,
-            type: "crypto",
-            currentPrice,
-            priceChange24h,
-            volume24h: marketData.total_volume?.usd || 0,
-            volumeMA20Day: (marketData.total_volume?.usd || 0) * 0.8,
-            rsi,
-            ma200Day: null,
-            pe: null,
-            dividendYield: 0,
-            price52WkHigh: marketData.ath?.usd || currentPrice,
-            price52WkLow: marketData.atl?.usd || currentPrice,
-            fetchedAt: new Date()
-        };
+            resultMap[coin.id] = {
+                id: coin.symbol?.toUpperCase() || coin.id.toUpperCase(),
+                symbol: coin.symbol?.toUpperCase() || coin.id.toUpperCase(),
+                name: coin.name,
+                type: "crypto",
+                currentPrice: coin.current_price || 0,
+                priceChange24h,
+                volume24h: coin.total_volume || 0,
+                volumeMA20Day: (coin.total_volume || 0) * 0.8,
+                rsi,
+                ma200Day: null,
+                pe: null,
+                dividendYield: 0,
+                price52WkHigh: coin.ath || coin.current_price,
+                price52WkLow: coin.atl || coin.current_price,
+                fetchedAt: new Date()
+            };
+        });
+        return resultMap;
     } catch (e) {
-        console.error(`Error fetching ${coinId}:`, e);
-        return null;
+        console.error('Error fetching crypto batch:', e);
+        return {};
     }
 };
 
@@ -423,7 +439,11 @@ function DipBuyDashboard() {
     const handleAddTicker = () => {
         if (!newTickerInput.trim()) return;
 
-        const ticker = newTickerInput.trim().toUpperCase();
+        // Crypto uses lowercase CoinGecko IDs (e.g. "dogecoin"); everything
+        // else uses uppercase exchange tickers (e.g. "TSLA").
+        const ticker = newTickerType === 'crypto'
+            ? newTickerInput.trim().toLowerCase()
+            : newTickerInput.trim().toUpperCase();
 
         // Check if already exists
         if (customTickers.some(t => t.symbol === ticker)) {
@@ -488,19 +508,25 @@ function DipBuyDashboard() {
             await new Promise(resolve => setTimeout(resolve, 250));
         }
 
-        // Fetch crypto
-        for (const item of allSymbols.filter(x => x.type === 'crypto')) {
-            setProgress(`Fetching... (${current + 1}/${total}) ${item.symbol}`);
-            const data = await fetchCryptoData(item.symbol);
-            if (data) {
-                // Use custom name if it exists, otherwise use NAMES mapping
-                data.readableName = customNameMap[item.symbol] || NAMES[item.symbol] || data.name;
-                allAssets.push(data);
-            } else {
-                failed.push(item.symbol);
-            }
-            current++;
-            await new Promise(resolve => setTimeout(resolve, 100));
+        // Fetch crypto - single batched request (see fetchCryptoDataBatch
+        // comment for why this replaced the old per-coin loop).
+        const cryptoItems = allSymbols.filter(x => x.type === 'crypto');
+        if (cryptoItems.length > 0) {
+            setProgress(`Fetching crypto batch... (${cryptoItems.length} coins)`);
+            const cryptoIds = cryptoItems.map(item => item.symbol.toLowerCase());
+            const cryptoResults = await fetchCryptoDataBatch(cryptoIds);
+
+            cryptoItems.forEach(item => {
+                const coinId = item.symbol.toLowerCase();
+                const data = cryptoResults[coinId];
+                current++;
+                if (data) {
+                    data.readableName = customNameMap[item.symbol] || NAMES[item.symbol] || data.name;
+                    allAssets.push(data);
+                } else {
+                    failed.push(item.symbol);
+                }
+            });
         }
 
         if (allAssets.length > 0) {
@@ -613,7 +639,7 @@ function DipBuyDashboard() {
             React.createElement("div", { className: "mb-6 p-4 bg-amber-900/20 border border-amber-700/50 rounded-lg text-sm text-amber-200" },
                 React.createElement("strong", null, "Note on index rows: "),
                 "SPY (×10) and QQQ (×40.5) are scaled to approximate the S&P 500 and Nasdaq 100 — same underlying index, so this is a tight approximation. ",
-                "EWJ (×736), EWH (×1100), and MCHI (×79.5) are scaled to approximate the Nikkei 225, Hang Seng, and Shanghai Composite, but those ETFs actually track MSCI Japan/Hong Kong/China — a different, correlated-but-not-identical index — so treat those three as rough ballpark figures, not exact index levels. Hover the \"≈ index\" tag on any row for details."
+                "EWJ (×736), EWH (×1100), and MCHI (×307) are scaled to approximate the Nikkei 225, Hang Seng, and FTSE China A50, but those ETFs actually track MSCI Japan/Hong Kong/China — a different, correlated-but-not-identical index — so treat those three as rough ballpark figures, not exact index levels. Hover the \"≈ index\" tag on any row for details."
             ),
 
             /* ADD CUSTOM TICKER */
@@ -624,9 +650,9 @@ function DipBuyDashboard() {
                         React.createElement("input", {
                             type: "text",
                             value: newTickerInput,
-                            onChange: (e) => setNewTickerInput(e.target.value.toUpperCase()),
+                            onChange: (e) => setNewTickerInput(e.target.value),
                             onKeyPress: (e) => e.key === 'Enter' && handleAddTicker(),
-                            placeholder: "e.g., TSLA",
+                            placeholder: newTickerType === 'crypto' ? "e.g., dogecoin" : "e.g., TSLA",
                             className: "px-3 py-2 bg-slate-700 text-white rounded border border-slate-600 focus:outline-none focus:border-emerald-500 w-28"
                         })
                     ),
