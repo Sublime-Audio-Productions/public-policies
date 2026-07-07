@@ -32,25 +32,54 @@ const FINNHUB_API_KEY = "d90f5mhr01qk8bflc40gd90f5mhr01qk8bflc410";
    INDEX-LEVEL DISPLAY MULTIPLIERS
    -----------------------------------------------------------
    Finnhub's free tier only returns ETF share prices, not real
-   index levels (^GSPC, ^NDX, etc. require a paid plan). SPY and
-   QQQ track their indexes closely enough that a static
-   multiplier gives a good approximation of the actual index
-   level for DISPLAY ONLY.
+   index levels (^GSPC, ^NDX, ^N225, ^HSI, etc. require a paid
+   plan). These multipliers scale the ETF price up to
+   approximate the target index level for DISPLAY ONLY.
 
    These do NOT affect priceChange24h, RSI, volume ratio, or
    dipScore — all of that math is already scale-invariant
    (it's based on % change and ratios), so it stays accurate
    whether you multiply the price or not.
 
-   Recalibrate occasionally: divide the real index level by the
-   ETF price to check these are still close.
-   (Roughly current as of Jul 2026: SPX ~7483 / SPY ~744.78 ≈ 10.05;
-   NDX ~ QQQ * ~32-33, but QQQ's divisor isn't fixed the way SPY's
-   is, so check this one more often.)
+   TWO DIFFERENT LEVELS OF ACCURACY HERE:
+
+   - SPY -> S&P 500 and QQQ -> Nasdaq-100 are SAME-INDEX ratios.
+     The ETF is built to track that exact index, so the ratio is
+     tight and stable (SPY drifts very slowly; QQQ's divisor
+     moves a bit more since it isn't fixed by design like SPY's).
+
+   - EWJ -> Nikkei 225, EWH -> Hang Seng, and MCHI -> Shanghai
+     Composite are CROSS-INDEX ratios. EWJ/EWH/MCHI actually track
+     MSCI Japan / MSCI Hong Kong / MSCI China, which are
+     correlated with but NOT the same basket as Nikkei/Hang
+     Seng/Shanghai Composite. The multiplier gets you a
+     ballpark display number, but expect more day-to-day error
+     here than with SPY/QQQ - these index pairs can genuinely
+     move a percent or two apart from each other on any given day.
+
+   Recalibrate periodically: divide the real index level by the
+   ETF price and update below.
+   (Checked Jul 2026: SPX ~7483 / SPY ~745 ~= 10.0
+    NDX ~29,329 / QQQ ~723 ~= 40.5
+    Nikkei 225 ~70,100 / EWJ ~95 ~= 736
+    Hang Seng ~23,350 / EWH ~21.2 ~= 1100
+    Shanghai Composite ~4,044 / MCHI ~50.9 ~= 79.5)
 ========================= */
 const INDEX_MULTIPLIER = {
     "SPY": 10,
-    "QQQ": 32.5
+    "QQQ": 40.5,
+    "EWJ": 736,
+    "EWH": 1100,
+    "MCHI": 79.5
+};
+
+// What each scaled row is meant to approximate, shown as a tooltip.
+const INDEX_TARGET_LABEL = {
+    "SPY": "S&P 500",
+    "QQQ": "Nasdaq 100",
+    "EWJ": "Nikkei 225 (rough - EWJ tracks MSCI Japan, a different index)",
+    "EWH": "Hang Seng (rough - EWH tracks MSCI Hong Kong, a different index)",
+    "MCHI": "Shanghai Composite (rough - MCHI tracks MSCI China, a different index)"
 };
 
 /* =========================
@@ -59,10 +88,10 @@ const INDEX_MULTIPLIER = {
 const SYMBOLS = {
     indexes: [
         "SPY",      // S&P 500 (ETF proxy, scaled ~10x for display)
-        "QQQ",      // Nasdaq 100 (ETF proxy, scaled ~32.5x for display)
-        "EWJ",      // MSCI Japan (NOT the Nikkei 225 - different index methodology)
-        "EWH",      // MSCI Hong Kong (NOT the Hang Seng - different index methodology)
-        "MCHI"      // MSCI China (replaces XIN9.FGI, which Finnhub's free tier can't quote)
+        "QQQ",      // Nasdaq 100 (ETF proxy, scaled ~40.5x for display)
+        "EWJ",      // MSCI Japan, scaled ~736x as a rough Nikkei 225 approximation
+        "EWH",      // MSCI Hong Kong, scaled ~1100x as a rough Hang Seng approximation
+        "MCHI"      // MSCI China, scaled ~79.5x as a rough Shanghai Composite approximation (replaces XIN9.FGI, which Finnhub's free tier can't quote)
     ],
     stocks: [
         "AAPL", "MSFT", "GOOGL", "AMZN", "TSLA",
@@ -583,8 +612,8 @@ function DipBuyDashboard() {
             /* NOTE ABOUT INDEX PROXIES */
             React.createElement("div", { className: "mb-6 p-4 bg-amber-900/20 border border-amber-700/50 rounded-lg text-sm text-amber-200" },
                 React.createElement("strong", null, "Note on index rows: "),
-                "SPY and QQQ prices are scaled (×10 and ×32.5) to approximate the S&P 500 and Nasdaq 100 index levels — these multipliers drift slowly over time and should be rechecked occasionally. ",
-                "MSCI Japan and MSCI Hong Kong are correlated with, but not identical to, the Nikkei 225 and Hang Seng — no ratio makes those equivalent, since they're differently constructed indexes."
+                "SPY (×10) and QQQ (×40.5) are scaled to approximate the S&P 500 and Nasdaq 100 — same underlying index, so this is a tight approximation. ",
+                "EWJ (×736), EWH (×1100), and MCHI (×79.5) are scaled to approximate the Nikkei 225, Hang Seng, and Shanghai Composite, but those ETFs actually track MSCI Japan/Hong Kong/China — a different, correlated-but-not-identical index — so treat those three as rough ballpark figures, not exact index levels. Hover the \"≈ index\" tag on any row for details."
             ),
 
             /* ADD CUSTOM TICKER */
@@ -701,7 +730,7 @@ function DipBuyDashboard() {
                                     asset.readableName || asset.name,
                                     asset.isIndexScaled && React.createElement("span", {
                                         className: "ml-2 text-xs text-amber-400/80 align-middle",
-                                        title: "Displayed price is the ETF price scaled by a fixed multiplier to approximate the index level"
+                                        title: `Scaled ${INDEX_MULTIPLIER[asset.symbol]}x to approximate: ${INDEX_TARGET_LABEL[asset.symbol] || ''}`
                                     }, "≈ index")
                                 ),
                                 React.createElement("td", { className: "px-4 py-3 text-right text-white font-mono" },
