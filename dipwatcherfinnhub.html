@@ -105,7 +105,8 @@ const SYMBOLS = {
     commodities: [
         "USO",      // Oil
         "UNG",      // Natural Gas
-        "DBC"       // Commodities (includes cocoa)
+        "DBC",      // Commodities (includes cocoa)
+        "JO"        // Coffee (iPath Series B Bloomberg Coffee Subindex ETN)
     ],
     leveraged: [
         "FAS",      // 3x Financials
@@ -166,6 +167,7 @@ const NAMES = {
     "USO": "Oil (Crude)",
     "UNG": "Natural Gas",
     "DBC": "Commodities Bundle",
+    "JO": "Coffee",
 
     // Leveraged/Inverse ETFs
     "FAS": "3x Financials (Bullish)",
@@ -407,6 +409,15 @@ const getDisplayPrice = (asset) => {
     };
 };
 
+// Symbols where the ETF/instrument's share price has permanently diverged
+// from the actual per-unit commodity price, with NO reliable ratio to
+// convert one to the other (unlike SPY/QQQ, which have a stable ratio to
+// their index by design). Rendered as a warning tag instead of a fake
+// multiplier - a made-up ratio here would be actively misleading.
+const PROXY_CAVEAT = {
+    "USO": "USO is the ETF share price, not the $/barrel WTI price. USO has drifted far from crude's actual price over time due to reverse stock splits (notably after 2020) and \"roll decay\" from constantly rolling futures contracts - there's no fixed ratio between the two, so it can't be scaled like SPY/QQQ."
+};
+
 /* =========================
    MAIN APP
 ========================= */
@@ -639,7 +650,8 @@ function DipBuyDashboard() {
             React.createElement("div", { className: "mb-6 p-4 bg-amber-900/20 border border-amber-700/50 rounded-lg text-sm text-amber-200" },
                 React.createElement("strong", null, "Note on index rows: "),
                 "SPY (×10) and QQQ (×40.5) are scaled to approximate the S&P 500 and Nasdaq 100 — same underlying index, so this is a tight approximation. ",
-                "EWJ (×736), EWH (×1100), and MCHI (×307) are scaled to approximate the Nikkei 225, Hang Seng, and FTSE China A50, but those ETFs actually track MSCI Japan/Hong Kong/China — a different, correlated-but-not-identical index — so treat those three as rough ballpark figures, not exact index levels. Hover the \"≈ index\" tag on any row for details."
+                "EWJ (×736), EWH (×1100), and MCHI (×307) are scaled to approximate the Nikkei 225, Hang Seng, and FTSE China A50, but those ETFs actually track MSCI Japan/Hong Kong/China — a different, correlated-but-not-identical index — so treat those three as rough ballpark figures, not exact index levels. ",
+                "USO (oil) is shown at its real ETF share price, which is NOT the $/barrel price — reverse splits and futures-roll decay have permanently decoupled the two, so no ratio can fix it. Hover the tags on any row for details."
             ),
 
             /* ADD CUSTOM TICKER */
@@ -757,7 +769,11 @@ function DipBuyDashboard() {
                                     asset.isIndexScaled && React.createElement("span", {
                                         className: "ml-2 text-xs text-amber-400/80 align-middle",
                                         title: `Scaled ${INDEX_MULTIPLIER[asset.symbol]}x to approximate: ${INDEX_TARGET_LABEL[asset.symbol] || ''}`
-                                    }, "≈ index")
+                                    }, "≈ index"),
+                                    PROXY_CAVEAT[asset.symbol] && React.createElement("span", {
+                                        className: "ml-2 text-xs text-red-400/80 align-middle",
+                                        title: PROXY_CAVEAT[asset.symbol]
+                                    }, "⚠ ETF ≠ spot price")
                                 ),
                                 React.createElement("td", { className: "px-4 py-3 text-right text-white font-mono" },
                                     "$" + asset.displayPrice.toLocaleString(undefined, { maximumFractionDigits: 2, minimumFractionDigits: 2 })
