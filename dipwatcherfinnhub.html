@@ -419,6 +419,23 @@ const PROXY_CAVEAT = {
 };
 
 /* =========================
+   RATING LABEL
+   -----------------------------------------------------------
+   Maps the existing 0-100 dipScore onto a 5-tier label, purely
+   as a more readable wrapper around the same heuristic that's
+   already being computed (price momentum + RSI + volume surge +
+   valuation). This is NOT independent investment advice or a
+   separate signal - it's the same dipScore, just labeled.
+========================= */
+const getRatingLabel = (score) => {
+    if (score >= 70) return { label: "Strong Buy", classes: "text-green-700 bg-green-100 border border-green-300" };
+    if (score >= 50) return { label: "Moderate Buy", classes: "text-emerald-700 bg-emerald-100 border border-emerald-300" };
+    if (score >= 30) return { label: "Hold", classes: "text-yellow-700 bg-yellow-100 border border-yellow-300" };
+    if (score >= 15) return { label: "Moderate Sell", classes: "text-orange-700 bg-orange-100 border border-orange-300" };
+    return { label: "Strong Sell", classes: "text-red-700 bg-red-100 border border-red-300" };
+};
+
+/* =========================
    MAIN APP
 ========================= */
 function DipBuyDashboard() {
@@ -749,7 +766,8 @@ function DipBuyDashboard() {
                             React.createElement("th", { className: "px-4 py-3 text-right text-slate-300 font-semibold cursor-pointer hover:text-white", onClick: () => setSortConfig({ key: 'priceChange24h', direction: 'asc' }) }, "24h Change"),
                             React.createElement("th", { className: "px-4 py-3 text-center text-slate-300 font-semibold cursor-pointer hover:text-white", onClick: () => setSortConfig({ key: 'rsi', direction: 'asc' }) }, "RSI"),
                             React.createElement("th", { className: "px-4 py-3 text-center text-slate-300 font-semibold" }, "Vol Signal"),
-                            React.createElement("th", { className: "px-4 py-3 text-center text-slate-300 font-semibold cursor-pointer hover:text-white", onClick: () => setSortConfig({ key: 'dipScore', direction: 'desc' }) }, "Dip Score")
+                            React.createElement("th", { className: "px-4 py-3 text-center text-slate-300 font-semibold cursor-pointer hover:text-white", onClick: () => setSortConfig({ key: 'dipScore', direction: 'desc' }) }, "Dip Score"),
+                            React.createElement("th", { className: "px-4 py-3 text-center text-slate-300 font-semibold" }, "Signal")
                         )
                     ),
                     React.createElement("tbody", null,
@@ -791,6 +809,11 @@ function DipBuyDashboard() {
                                     React.createElement("div", { className: `rounded-lg px-3 py-2 text-center font-bold font-mono ${getDipScoreColor(asset.dipScore)}` },
                                         Math.round(asset.dipScore) + "/100"
                                     )
+                                ),
+                                React.createElement("td", { className: "px-4 py-3 text-center" },
+                                    React.createElement("span", {
+                                        className: `inline-block px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap ${getRatingLabel(asset.dipScore).classes}`
+                                    }, getRatingLabel(asset.dipScore).label)
                                 )
                             )
                         )
@@ -805,6 +828,10 @@ function DipBuyDashboard() {
                 React.createElement("div", { className: "text-sm text-slate-300" },
                     React.createElement("strong", null, "How it works: "),
                     "Click 'Update Data' to fetch real market prices from Finnhub (stocks, ETFs, commodities, leveraged) and CoinGecko (crypto). All data is processed in your browser and cached locally. Index rows (SPY, QQQ) show a scaled approximation of the underlying index level; MSCI Japan/Hong Kong are regional proxies, not the Nikkei/Hang Seng themselves."
+                ),
+                React.createElement("div", { className: "text-sm text-slate-300 mt-3" },
+                    React.createElement("strong", null, "Signal scale: "),
+                    "The Signal column is just the Dip Score (0-100) relabeled - Strong Buy (70+), Moderate Buy (50-69), Hold (30-49), Moderate Sell (15-29), Strong Sell (below 15). It's the same underlying heuristic (price momentum, RSI, volume surge, valuation), not a separate or more authoritative signal, and it isn't financial advice - it's a rough screening heuristic worth sanity-checking before acting on."
                 )
             )
         )
