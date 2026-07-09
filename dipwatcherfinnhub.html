@@ -217,12 +217,24 @@ const calculateRSI = (prices) => {
 
 /* =========================
    FETCH STOCK DATA (FINNHUB)
+   -----------------------------------------------------------
+   Fetches /quote and /stock/metric concurrently for each symbol.
+   /quote never includes volume (Finnhub's free tier doesn't
+   expose it there, and the /stock/candle endpoint that used to
+   have it is now premium-only) - so hasVolume is always false
+   here, letting calculateDipScore skip that component instead
+   of silently scoring it as zero.
+   /stock/metric provides a real trailing P/E where Finnhub has
+   one. ETFs, indexes, leveraged funds, and commodities typically
+   won't have a meaningful P/E, so `pe` will just come back null
+   for those - that's expected, not an error.
 ========================= */
 const fetchStockData = async (symbol) => {
     try {
-        const quoteRes = await fetch(
-            `https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${FINNHUB_API_KEY}`
-        );
+        const [quoteRes, metricRes] = await Promise.all([
+            fetch(`https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${FINNHUB_API_KEY}`),
+            fetch(`https://finnhub.io/api/v1/stock/metric?symbol=${symbol}&metric=all&token=${FINNHUB_API_KEY}`)
+        ]);
 
         const quote = await quoteRes.json();
 
@@ -244,6 +256,19 @@ const fetchStockData = async (symbol) => {
         else if (change24h < 4) rsi = 60;
         else if (change24h > 10) rsi = 80;
 
+        // Real trailing P/E, if Finnhub has one for this symbol.
+        let pe = null;
+        try {
+            const metricData = await metricRes.json();
+            const rawPe = metricData?.metric?.peBasicExclExtraTTM
+                ?? metricData?.metric?.peExclExtraTTM
+                ?? metricData?.metric?.peTTM
+                ?? null;
+            pe = (typeof rawPe === "number" && !isNaN(rawPe) && rawPe > 0) ? rawPe : null;
+        } catch (e) {
+            pe = null;
+        }
+
         return {
             id: symbol,
             symbol,
@@ -251,11 +276,12 @@ const fetchStockData = async (symbol) => {
             type: "stock",
             currentPrice,
             priceChange24h: change24h,
-            volume24h: quote.v || 0,
-            volumeMA20Day: Math.max((quote.v || 0) * 0.85, 1),
+            volume24h: 0,
+            volumeMA20Day: 1,
+            hasVolume: false,
             rsi,
             ma200Day: null,
-            pe: null,
+            pe,
             dividendYield: 0,
             price52WkHigh: quote.h || currentPrice,
             price52WkLow: quote.l || currentPrice,
@@ -315,6 +341,7 @@ const fetchCryptoDataBatch = async (coinIds) => {
                 priceChange24h,
                 volume24h: coin.total_volume || 0,
                 volumeMA20Day: (coin.total_volume || 0) * 0.8,
+                hasVolume: true,
                 rsi,
                 ma200Day: null,
                 pe: null,
@@ -334,13 +361,17 @@ const fetchCryptoDataBatch = async (coinIds) => {
 /* =========================
    CALCULATE DIP SCORE (IMPROVED)
    -----------------------------------------------------------
-   Unchanged from before - this operates entirely on % change,
-   RSI, and volume ratio, none of which depend on whether the
-   underlying price is an ETF share price or a scaled index
-   level, so it stays correct regardless of INDEX_MULTIPLIER.
+   Momentum and RSI are always measurable, so they always count.
+   Volume and P/E are only counted for assets where we actually
+   have real data for them (hasVolume / a real pe value) - for
+   everyone else, that component is left out of both the score
+   AND the max-possible total, then the result is normalized back
+   to a 0-100 scale. This avoids silently treating "we don't have
+   this data" the same as "this data says there's no signal here."
 ========================= */
 const calculateDipScore = (asset) => {
     let score = 0;
+    let maxPossible = 40 + 30; // price momentum + RSI are always available
 
     // Price momentum is primary indicator (0-40 points)
     // Down moves indicate potential dips
@@ -360,8 +391,10 @@ const calculateDipScore = (asset) => {
     else if (asset.rsi < 40) score += 10;
     else if (asset.rsi > 70) score -= 10; // Overbought reduces score
 
-    // Volume surge (0-20 points) - Panic selling shows conviction
-    if (asset.volumeMA20Day > 0) {
+    // Volume surge (0-20 points) - Panic selling shows conviction.
+    // Only counted when we actually have real volume data (crypto).
+    if (asset.hasVolume && asset.volumeMA20Day > 0) {
+        maxPossible += 20;
         const volumeRatio = asset.volume24h / asset.volumeMA20Day;
         if (volumeRatio > 2.5) score += 20;
         else if (volumeRatio > 2.0) score += 18;
@@ -371,8 +404,11 @@ const calculateDipScore = (asset) => {
         else if (volumeRatio > 1.0) score += 3;
     }
 
-    // Valuation bonus (0-10 points) - Low PE is attractive
+    // Valuation bonus (0-10 points) - Low PE is attractive.
+    // Only counted when we have a real P/E (not every symbol has one -
+    // ETFs, indexes, leveraged funds, and commodities typically won't).
     if (asset.pe && asset.pe > 0) {
+        maxPossible += 10;
         if (asset.pe < 12) score += 10;
         else if (asset.pe < 15) score += 8;
         else if (asset.pe < 18) score += 6;
@@ -380,8 +416,10 @@ const calculateDipScore = (asset) => {
         else if (asset.pe > 40) score -= 5; // Very expensive gets penalty
     }
 
-    // Return to realistic range (0-100)
-    return Math.max(0, Math.min(100, score));
+    // Normalize to 0-100 based on what was actually measurable for this
+    // asset, so missing data never quietly acts as a penalty.
+    const normalized = maxPossible > 0 ? (score / maxPossible) * 100 : 0;
+    return Math.max(0, Math.min(100, normalized));
 };
 
 /* =========================
@@ -521,6 +559,9 @@ function DipBuyDashboard() {
         const total = allSymbols.length;
 
         // Fetch stocks, ETFs, and indexes
+        // Each symbol now makes 2 Finnhub calls (quote + metric), and the
+        // free tier caps out at 60 calls/minute - so pacing is set to stay
+        // safely under that (roughly 30 symbols/minute = 60 calls/minute).
         for (const item of allSymbols.filter(x => x.type !== 'crypto')) {
             setProgress(`Fetching... (${current + 1}/${total}) ${item.symbol}`);
             const data = await fetchStockData(item.symbol);
@@ -533,7 +574,7 @@ function DipBuyDashboard() {
                 failed.push(item.symbol);
             }
             current++;
-            await new Promise(resolve => setTimeout(resolve, 250));
+            await new Promise(resolve => setTimeout(resolve, 2000));
         }
 
         // Fetch crypto - single batched request (see fetchCryptoDataBatch
@@ -803,7 +844,12 @@ function DipBuyDashboard() {
                                     asset.rsi.toFixed(0)
                                 ),
                                 React.createElement("td", { className: "px-4 py-3 text-center font-mono text-slate-300" },
-                                    asset.volumeRatio.toFixed(2) + "x"
+                                    asset.hasVolume
+                                        ? asset.volumeRatio.toFixed(2) + "x"
+                                        : React.createElement("span", {
+                                            className: "text-slate-500 italic text-xs",
+                                            title: "Finnhub's free API doesn't provide trading volume for stocks/ETFs/commodities. Only crypto (via CoinGecko) has real volume data - this row's Dip Score was normalized to exclude the volume component rather than scoring it as zero."
+                                        }, "no data")
                                 ),
                                 React.createElement("td", { className: "px-4 py-3" },
                                     React.createElement("div", { className: `rounded-lg px-3 py-2 text-center font-bold font-mono ${getDipScoreColor(asset.dipScore)}` },
@@ -832,6 +878,10 @@ function DipBuyDashboard() {
                 React.createElement("div", { className: "text-sm text-slate-300 mt-3" },
                     React.createElement("strong", null, "Signal scale: "),
                     "The Signal column is just the Dip Score (0-100) relabeled - Strong Buy (70+), Moderate Buy (50-69), Hold (30-49), Moderate Sell (15-29), Strong Sell (below 15). It's the same underlying heuristic (price momentum, RSI, volume surge, valuation), not a separate or more authoritative signal, and it isn't financial advice - it's a rough screening heuristic worth sanity-checking before acting on."
+                ),
+                React.createElement("div", { className: "text-sm text-slate-300 mt-3" },
+                    React.createElement("strong", null, "Data coverage: "),
+                    "Finnhub's free tier doesn't provide trading volume for stocks/ETFs/commodities, so only crypto rows (via CoinGecko) show a real Vol Signal - other rows show \"no data\" and the Dip Score is normalized to exclude that component rather than scoring it as zero. P/E-based valuation now pulls a real trailing P/E from Finnhub where one exists; ETFs, indexes, leveraged funds, and commodities typically don't have one, so that component is excluded for those too, again without penalizing the score."
                 )
             )
         )
