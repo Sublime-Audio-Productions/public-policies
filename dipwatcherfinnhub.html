@@ -423,6 +423,86 @@ const calculateDipScore = (asset) => {
 };
 
 /* =========================
+   CALCULATE SHORT SCORE
+   -----------------------------------------------------------
+   Mirror image of the Dip Score. Where the Dip Score looks for
+   oversold, "beaten down" conditions that might make a good LONG
+   entry, the Short Score looks for overbought, overextended
+   conditions that might make a good SHORT entry - a sharp run-up,
+   an overbought RSI reading, a volume blow-off on the way up, and
+   a stretched valuation.
+
+   Same normalization approach as calculateDipScore: components
+   we don't have real data for (volume for non-crypto, P/E for
+   ETFs/indexes/leveraged/commodities) are excluded from both the
+   score AND maxPossible, rather than silently scoring as zero.
+
+   IMPORTANT CAVEAT baked into the UI (see info box + disclaimer
+   below): shorting carries risk of theoretically unlimited loss
+   (a long position can only fall to $0, a short position can
+   rise indefinitely), plus borrow costs, margin calls, and squeeze
+   risk that a long dip-buy doesn't carry. This score is a
+   screening heuristic only, not a recommendation to short anything.
+========================= */
+const calculateShortScore = (asset) => {
+    let score = 0;
+    let maxPossible = 40 + 30; // price momentum + RSI are always available
+
+    // Price momentum (0-40 points) - Up moves indicate potential
+    // over-extension / blow-off top setups.
+    if (asset.priceChange24h > 10) score += 40;
+    else if (asset.priceChange24h > 8) score += 35;
+    else if (asset.priceChange24h > 6) score += 30;
+    else if (asset.priceChange24h > 4) score += 25;
+    else if (asset.priceChange24h > 2) score += 18;
+    else if (asset.priceChange24h > 0) score += 10;
+    else if (asset.priceChange24h > -2) score += 5;
+
+    // RSI Signal (0-30 points) - Overbought is key
+    if (asset.rsi > 80) score += 30;
+    else if (asset.rsi > 75) score += 25;
+    else if (asset.rsi > 70) score += 20;
+    else if (asset.rsi > 65) score += 15;
+    else if (asset.rsi > 60) score += 10;
+    else if (asset.rsi < 30) score -= 10; // Oversold reduces short appeal
+
+    // Volume surge (0-20 points) - A volume spike on a big up move can
+    // signal capitulation buying / a blow-off top. Only counted when we
+    // actually have real volume data (crypto).
+    if (asset.hasVolume && asset.volumeMA20Day > 0) {
+        maxPossible += 20;
+        const volumeRatio = asset.volume24h / asset.volumeMA20Day;
+        if (asset.priceChange24h > 0) {
+            if (volumeRatio > 2.5) score += 20;
+            else if (volumeRatio > 2.0) score += 18;
+            else if (volumeRatio > 1.8) score += 16;
+            else if (volumeRatio > 1.5) score += 12;
+            else if (volumeRatio > 1.2) score += 8;
+            else if (volumeRatio > 1.0) score += 3;
+        }
+        // Volume surge on a DOWN move doesn't support a short thesis here,
+        // so it contributes 0 rather than penalizing.
+    }
+
+    // Valuation stretch (0-10 points) - High PE suggests the market has
+    // priced in a lot of optimism already. Only counted when we have a
+    // real P/E (ETFs/indexes/leveraged/commodities typically won't).
+    if (asset.pe && asset.pe > 0) {
+        maxPossible += 10;
+        if (asset.pe > 40) score += 10;
+        else if (asset.pe > 30) score += 8;
+        else if (asset.pe > 25) score += 6;
+        else if (asset.pe > 20) score += 4;
+        else if (asset.pe < 12) score -= 5; // Cheap valuation undercuts a short thesis
+    }
+
+    // Normalize to 0-100 based on what was actually measurable for this
+    // asset, so missing data never quietly acts as a penalty.
+    const normalized = maxPossible > 0 ? (score / maxPossible) * 100 : 0;
+    return Math.max(0, Math.min(100, normalized));
+};
+
+/* =========================
    DISPLAY-SCALE HELPER
    -----------------------------------------------------------
    Applies INDEX_MULTIPLIER (if any) to price fields that are
@@ -471,6 +551,22 @@ const getRatingLabel = (score) => {
     if (score >= 30) return { label: "Hold", classes: "text-yellow-700 bg-yellow-100 border border-yellow-300" };
     if (score >= 15) return { label: "Moderate Sell", classes: "text-orange-700 bg-orange-100 border border-orange-300" };
     return { label: "Strong Sell", classes: "text-red-700 bg-red-100 border border-red-300" };
+};
+
+/* =========================
+   SHORT RATING LABEL
+   -----------------------------------------------------------
+   Same idea as getRatingLabel, but wraps the Short Score instead.
+   Deliberately uses different wording ("candidate" / "caution")
+   rather than "Buy/Sell" to keep it clear this is about entering
+   or avoiding a short position, not a general buy/sell call.
+========================= */
+const getShortRatingLabel = (score) => {
+    if (score >= 70) return { label: "Strong Short Candidate", classes: "text-red-700 bg-red-100 border border-red-300" };
+    if (score >= 50) return { label: "Moderate Short Candidate", classes: "text-orange-700 bg-orange-100 border border-orange-300" };
+    if (score >= 30) return { label: "Neutral", classes: "text-yellow-700 bg-yellow-100 border border-yellow-300" };
+    if (score >= 15) return { label: "Weak Setup", classes: "text-emerald-700 bg-emerald-100 border border-emerald-300" };
+    return { label: "Avoid Shorting", classes: "text-green-700 bg-green-100 border border-green-300" };
 };
 
 /* =========================
@@ -619,6 +715,7 @@ function DipBuyDashboard() {
             return {
                 ...asset,
                 dipScore: calculateDipScore(asset),
+                shortScore: calculateShortScore(asset),
                 volumeRatio: asset.volumeMA20Day > 0 ? asset.volume24h / asset.volumeMA20Day : 1,
                 displayPrice,
                 displayHigh,
@@ -650,6 +747,13 @@ function DipBuyDashboard() {
     const getDipScoreColor = (score) => {
         if (score >= 70) return 'text-green-600 bg-green-50';
         if (score >= 50) return 'text-emerald-600 bg-emerald-50';
+        if (score >= 30) return 'text-yellow-600 bg-yellow-50';
+        return 'text-gray-600 bg-gray-50';
+    };
+
+    const getShortScoreColor = (score) => {
+        if (score >= 70) return 'text-red-600 bg-red-50';
+        if (score >= 50) return 'text-orange-600 bg-orange-50';
         if (score >= 30) return 'text-yellow-600 bg-yellow-50';
         return 'text-gray-600 bg-gray-50';
     };
@@ -710,6 +814,12 @@ function DipBuyDashboard() {
                 "SPY (×10) and QQQ (×40.5) are scaled to approximate the S&P 500 and Nasdaq 100 — same underlying index, so this is a tight approximation. ",
                 "EWJ (×736), EWH (×1100), and MCHI (×307) are scaled to approximate the Nikkei 225, Hang Seng, and FTSE China A50, but those ETFs actually track MSCI Japan/Hong Kong/China — a different, correlated-but-not-identical index — so treat those three as rough ballpark figures, not exact index levels. ",
                 "USO (oil) is shown at its real ETF share price, which is NOT the $/barrel price — reverse splits and futures-roll decay have permanently decoupled the two, so no ratio can fix it. Hover the tags on any row for details."
+            ),
+
+            /* NOTE ABOUT SHORTING RISK */
+            React.createElement("div", { className: "mb-6 p-4 bg-red-900/20 border border-red-700/50 rounded-lg text-sm text-red-200" },
+                React.createElement("strong", null, "Note on the Short Score: "),
+                "Shorting carries risks that buying a dip doesn't — losses on a short are theoretically unlimited (a stock can only fall to $0, but it can rise indefinitely), plus there's borrow cost, margin calls, and short-squeeze risk on top of ordinary market risk. The Short Score below is a screening heuristic built the same way as the Dip Score, just inverted (rewarding sharp rallies, overbought RSI, and stretched valuations) — it is not a recommendation to open any position."
             ),
 
             /* ADD CUSTOM TICKER */
@@ -808,7 +918,9 @@ function DipBuyDashboard() {
                             React.createElement("th", { className: "px-4 py-3 text-center text-slate-300 font-semibold cursor-pointer hover:text-white", onClick: () => setSortConfig({ key: 'rsi', direction: 'asc' }) }, "RSI"),
                             React.createElement("th", { className: "px-4 py-3 text-center text-slate-300 font-semibold" }, "Vol Signal"),
                             React.createElement("th", { className: "px-4 py-3 text-center text-slate-300 font-semibold cursor-pointer hover:text-white", onClick: () => setSortConfig({ key: 'dipScore', direction: 'desc' }) }, "Dip Score"),
-                            React.createElement("th", { className: "px-4 py-3 text-center text-slate-300 font-semibold" }, "Signal")
+                            React.createElement("th", { className: "px-4 py-3 text-center text-slate-300 font-semibold" }, "Signal"),
+                            React.createElement("th", { className: "px-4 py-3 text-center text-slate-300 font-semibold cursor-pointer hover:text-white", onClick: () => setSortConfig({ key: 'shortScore', direction: 'desc' }) }, "Short Score"),
+                            React.createElement("th", { className: "px-4 py-3 text-center text-slate-300 font-semibold" }, "Short Signal")
                         )
                     ),
                     React.createElement("tbody", null,
@@ -848,7 +960,7 @@ function DipBuyDashboard() {
                                         ? asset.volumeRatio.toFixed(2) + "x"
                                         : React.createElement("span", {
                                             className: "text-slate-500 italic text-xs",
-                                            title: "Finnhub's free API doesn't provide trading volume for stocks/ETFs/commodities. Only crypto (via CoinGecko) has real volume data - this row's Dip Score was normalized to exclude the volume component rather than scoring it as zero."
+                                            title: "Finnhub's free API doesn't provide trading volume for stocks/ETFs/commodities. Only crypto (via CoinGecko) has real volume data - this row's Dip Score and Short Score were normalized to exclude the volume component rather than scoring it as zero."
                                         }, "no data")
                                 ),
                                 React.createElement("td", { className: "px-4 py-3" },
@@ -860,6 +972,16 @@ function DipBuyDashboard() {
                                     React.createElement("span", {
                                         className: `inline-block px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap ${getRatingLabel(asset.dipScore).classes}`
                                     }, getRatingLabel(asset.dipScore).label)
+                                ),
+                                React.createElement("td", { className: "px-4 py-3" },
+                                    React.createElement("div", { className: `rounded-lg px-3 py-2 text-center font-bold font-mono ${getShortScoreColor(asset.shortScore)}` },
+                                        Math.round(asset.shortScore) + "/100"
+                                    )
+                                ),
+                                React.createElement("td", { className: "px-4 py-3 text-center" },
+                                    React.createElement("span", {
+                                        className: `inline-block px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap ${getShortRatingLabel(asset.shortScore).classes}`
+                                    }, getShortRatingLabel(asset.shortScore).label)
                                 )
                             )
                         )
@@ -880,8 +1002,12 @@ function DipBuyDashboard() {
                     "The Signal column is just the Dip Score (0-100) relabeled - Strong Buy (70+), Moderate Buy (50-69), Hold (30-49), Moderate Sell (15-29), Strong Sell (below 15). It's the same underlying heuristic (price momentum, RSI, volume surge, valuation), not a separate or more authoritative signal, and it isn't financial advice - it's a rough screening heuristic worth sanity-checking before acting on."
                 ),
                 React.createElement("div", { className: "text-sm text-slate-300 mt-3" },
+                    React.createElement("strong", null, "Short Score & Short Signal: "),
+                    "The Short Score is the mirror image of the Dip Score: instead of rewarding oversold/beaten-down conditions, it rewards overbought, overextended conditions - a sharp run-up, an overbought RSI reading, a volume blow-off on a big up move, and a stretched valuation (high trailing P/E). Short Signal (70+ Strong Short Candidate, 50-69 Moderate Short Candidate, 30-49 Neutral, 15-29 Weak Setup, below 15 Avoid Shorting) is just that score relabeled. As with the Dip Score, it's a screening heuristic, not a recommendation - and shorting specifically carries additional risks (theoretically unlimited loss, borrow costs, margin calls, short-squeeze risk) that a long position doesn't."
+                ),
+                React.createElement("div", { className: "text-sm text-slate-300 mt-3" },
                     React.createElement("strong", null, "Data coverage: "),
-                    "Finnhub's free tier doesn't provide trading volume for stocks/ETFs/commodities, so only crypto rows (via CoinGecko) show a real Vol Signal - other rows show \"no data\" and the Dip Score is normalized to exclude that component rather than scoring it as zero. P/E-based valuation now pulls a real trailing P/E from Finnhub where one exists; ETFs, indexes, leveraged funds, and commodities typically don't have one, so that component is excluded for those too, again without penalizing the score."
+                    "Finnhub's free tier doesn't provide trading volume for stocks/ETFs/commodities, so only crypto rows (via CoinGecko) show a real Vol Signal - other rows show \"no data\" and both scores are normalized to exclude that component rather than scoring it as zero. P/E-based valuation now pulls a real trailing P/E from Finnhub where one exists; ETFs, indexes, leveraged funds, and commodities typically don't have one, so that component is excluded for those too, again without penalizing either score."
                 )
             )
         )
