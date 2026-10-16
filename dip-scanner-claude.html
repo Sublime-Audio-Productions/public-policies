@@ -98,13 +98,15 @@ const DEFAULTS = {
   stopMult: 1,              // stop distance in ATRs
   minScore: 40,             // minimum |lean| for a setup to count as actionable
   expireHours: 4,           // journal entries not resolved by then are closed at market
+  dailyLossPct: 2,          // your own daily loss limit, % of equity (used by the risk basket)
+  leverage: 20,             // ASSUMED leverage for margin estimates. Set to your broker's real rate for each product
   refreshSec: 30,
   auto: false,
   drivers: true,
   enabled: Object.fromEntries(MARKETS.map(m => [m.id, true]))
 };
 
-const LS = { settings: 'dts2_settings', journal: 'dts2_journal', events: 'dts2_events', cache: 'dts2_cache' };
+const LS = { settings: 'dts2_settings', journal: 'dts2_journal', events: 'dts2_events', cache: 'dts2_cache', basket: 'dts2_basket' };
 
 /*PURE_START*/
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
@@ -361,6 +363,149 @@ function sessionInfo(key, nowMs) {
   const weekday = dow !== 0 && dow !== 6;
   return { key, label: s.label, openT: open, closeT: close, isOpen: weekday && nowMs >= open && nowMs < close };
 }
+
+/* ---------- risk assessment & recommendations ---------- */
+const CLUSTERS = { NAS100: 'US equities', SPX500: 'US equities', JP225: 'Asia equities', HK50: 'Asia equities', CN50: 'Asia equities', XAUUSD: 'Metals', XAGUSD: 'Metals', WTI: 'Oil' };
+
+function isWeekendGapRisk(nowMs) { const d = new Date(nowMs); return d.getUTCDay() === 5 && d.getUTCHours() >= 18; }
+
+// Nearest known level in the direction of the trade (a level that could stall the move)
+function nearestObstacle(a, dir) {
+  const levels = [['VWAP', a.vwap], ['the day high', a.dayHigh], ['the day low', a.dayLow], ['the prior day high', a.pdh],
+    ['the prior day low', a.pdl], ['the prior day close', a.pdc], ['EMA 50', a.ema50]].filter(x => x[1] != null);
+  let best = null;
+  for (const [name, v] of levels) {
+    const d = (v - a.price) * dir;
+    if (d > a.atr * 0.05 && (best == null || d < best.d)) best = { name, v, d };
+  }
+  return best;
+}
+
+// ctx: { core, stale, dataOld, eventActive, eventMinutes, weekendGap, equity, riskPct, stopMult }
+function riskAssess(a, dir, ctx) {
+  const R = a.atr * ctx.stopMult;
+  const f = [];
+  const add = (pts, label, text) => { if (pts > 0) f.push({ pts, label, text }); };
+  const cost = a.spread / R;
+  add(cost > 0.25 ? 25 : cost > 0.15 ? 15 : cost > 0.08 ? 8 : 0, 'Spread', 'Spread is ' + (cost * 100).toFixed(0) + '% of your stop distance, and you pay it on every trade');
+  const adev = Math.abs(a.dev);
+  add(adev > 2.5 ? 15 : adev > 1.5 ? 8 : 0, 'Extended', 'Price is ' + adev.toFixed(1) + ' ATR from VWAP, so entering here is chasing a stretched move');
+  if (!ctx.core) add(20, 'Off-hours', 'Outside this market\'s core session: thinner liquidity, wider spreads and gaps are more likely');
+  if (ctx.eventActive) add(40, 'Event window', 'Inside a no-trade window around a scheduled event');
+  else if (ctx.eventMinutes != null && ctx.eventMinutes <= 60) add(ctx.eventMinutes <= 30 ? 25 : 15, 'Event soon', 'A scheduled event is about ' + Math.round(ctx.eventMinutes) + ' min away, and price can jump through a stop');
+  if (ctx.weekendGap) add(20, 'Weekend gap', 'Markets close for the weekend soon, and a position held over it can gap past your stop');
+  const trendDir = a.ema20 > a.ema50 ? 1 : -1;
+  if (a.adx >= 22 && dir !== trendDir) add(a.adx >= 30 ? 25 : 18, 'Against trend', 'This trade opposes a trend with ADX ' + a.adx.toFixed(0) + ', and counter-trend trades fail more often');
+  const ob = nearestObstacle(a, dir);
+  if (ob) { const dR = ob.d / R; add(dR < 1 ? 15 : dR < 2 ? 6 : 0, 'Level in the way', ob.name + ' is ' + dR.toFixed(1) + 'R away in your direction, so the 2R target may stall there'); }
+  if (ctx.stale) add(30, 'Stale data', 'The last candle is old: the market may be closed or the feed has stalled');
+  else if (ctx.dataOld) add(20, 'Old data', 'Not refreshed recently, so the price shown may have moved');
+  if (!a.spreadReal) add(5, 'Assumed spread', 'No live bid/ask on this data source, so the spread is an assumption');
+  const p = tradePlan(a, { equity: ctx.equity, riskPct: ctx.riskPct, stopMult: ctx.stopMult }, dir);
+  const lev = ctx.equity > 0 ? p.notional / ctx.equity : 0;
+  add(lev > 10 ? 15 : lev > 5 ? 8 : 0, 'Large position', 'Position value is ' + lev.toFixed(1) + 'x your equity at this size');
+  f.sort((x, y) => y.pts - x.pts);
+  const score = Math.min(100, f.reduce((t, x) => t + x.pts, 0));
+  const level = score < 25 ? 'Low' : score < 45 ? 'Moderate' : score < 65 ? 'High' : 'Very high';
+  // Win rate needed to break even with a +2R target, -1R stop, and the spread cost (as a share of R) paid on every trade
+  return { score, level, factors: f, cost, leverage: lev, breakevenWin: (1 + cost) / 3 };
+}
+
+const sizeFactor = (level) => level === 'Low' ? 1 : level === 'Moderate' ? 0.75 : level === 'High' ? 0.5 : 0;
+const streakLoss = (riskPct, n) => (1 - Math.pow(1 - riskPct / 100, n)) * 100;
+
+// Why a market is NOT a candidate right now (most informative reason first)
+function blockers(a, f, minScore) {
+  const b = [];
+  if (!a.entryType) b.push(a.setup === 'No setup' ? 'No entry setup right now' : 'No entry setup (' + a.setup.toLowerCase() + ')');
+  else if (Math.sign(a.lean) !== a.dir) b.push(a.setup + ' found, but the lean points the other way (' + a.lean + ')');
+  else if (Math.abs(a.lean) < minScore) b.push(a.setup + ' found, but lean ' + a.lean + ' is below your minimum of ' + minScore);
+  if (f.stale) b.push('Data is stale: market closed or feed stalled');
+  if (f.dataOld) b.push('Data is old: press Update data');
+  if (f.event) b.push('Inside an event no-trade window');
+  if (f.wide) b.push('Spread is over 25% of an ATR');
+  if (!f.core) b.push('Outside this market\'s core session hours');
+  return b;
+}
+
+// Plain-English reasons behind a setup
+function explain(a, dir) {
+  const out = [];
+  out.push(a.regime === 'Trend' ? 'Trending market (ADX ' + a.adx.toFixed(0) + ') with EMA20 ' + (a.ema20 > a.ema50 ? 'above' : 'below') + ' EMA50'
+    : a.regime === 'Range' ? 'Range-bound market (ADX ' + a.adx.toFixed(0) + '), where stretches tend to get faded'
+    : 'Transitional market (ADX ' + a.adx.toFixed(0) + '), neither clearly trending nor ranging');
+  out.push('Price is ' + Math.abs(a.dev).toFixed(1) + ' ATR ' + (a.dev >= 0 ? 'above' : 'below') + ' VWAP, RSI ' + a.rsi.toFixed(0) + (a.rsi >= 70 ? ' (overbought)' : a.rsi <= 30 ? ' (oversold)' : ''));
+  if (a.rvol != null) out.push('Volume is running ' + a.rvol.toFixed(1) + 'x normal for this time of day');
+  const ob = nearestObstacle(a, dir);
+  if (ob) out.push('Nearest level in your direction: ' + ob.name + ' at ' + ob.v.toFixed(a.price >= 100 ? 2 : 3));
+  else out.push('No known level stands between price and the target');
+  return out;
+}
+
+// pos: [{market, dir, riskPct}]   info: { [market]: { a, risk } }   s: { equity, stopMult, dailyLossPct, leverage, eventActive }
+function basketAssess(pos, s, info) {
+  const nameOf = (id) => (MARKETS.find(m => m.id === id) || {}).name || id;
+  const items = pos.map(p => {
+    const i = info[p.market];
+    if (!i) return { ...p, missing: true, name: nameOf(p.market) };
+    const plan = tradePlan(i.a, { equity: s.equity, riskPct: p.riskPct, stopMult: s.stopMult }, p.dir);
+    return { ...p, name: nameOf(p.market), plan, level: i.risk.level, riskScore: i.risk.score };
+  });
+  const ok = items.filter(x => !x.missing);
+  const totalRiskPct = ok.reduce((t, x) => t + x.riskPct, 0);
+  const totalRisk = s.equity * totalRiskPct / 100;
+  const notional = ok.reduce((t, x) => t + x.plan.notional, 0);
+  const lev = s.equity > 0 ? notional / s.equity : 0;
+  const margin = notional / Math.max(1, s.leverage);
+  const marginPct = s.equity > 0 ? margin / s.equity * 100 : 0;
+  const clusters = {};
+  for (const x of ok) {
+    const k = CLUSTERS[x.market] || x.market;
+    const c = clusters[k] || (clusters[k] = { name: k, long: 0, short: 0, n: 0 });
+    c[x.dir > 0 ? 'long' : 'short'] += x.riskPct; c.n++;
+  }
+  const clusterList = Object.values(clusters).map(c => ({ ...c, net: Math.abs(c.long - c.short) }));
+  const findings = [];
+  let sev = 0;
+  const flag = (lvl, text) => { findings.push({ lvl, text }); sev = Math.max(sev, lvl); };
+
+  const limit = s.dailyLossPct;
+  const limitUse = limit > 0 ? totalRiskPct / limit * 100 : 0;
+  if (limit > 0 && limitUse >= 100) flag(2, 'If every stop is hit you lose ' + totalRiskPct.toFixed(2) + '% of equity, which reaches or breaches your ' + limit + '% daily limit.');
+  else if (limit > 0 && limitUse >= 70) flag(1, 'If every stop is hit you lose ' + totalRiskPct.toFixed(2) + '%, using ' + limitUse.toFixed(0) + '% of your ' + limit + '% daily limit.');
+  else flag(0, 'If every stop is hit you lose ' + totalRiskPct.toFixed(2) + '% of equity, inside your ' + limit + '% daily limit.');
+
+  for (const c of clusterList) {
+    if ((c.long > 0 && c.short === 0 && c.n > 1) || (c.short > 0 && c.long === 0 && c.n > 1))
+      flag(1, 'Several ' + (c.long > 0 ? 'long' : 'short') + ' positions in ' + c.name + ' move together, so treat them as one bet of about ' + c.net.toFixed(2) + '% risk.');
+  }
+  if (marginPct > 80) flag(2, 'Estimated margin use is ' + marginPct.toFixed(0) + '% of equity at ' + s.leverage + ':1, leaving little buffer before a margin call.');
+  else if (marginPct > 50) flag(1, 'Estimated margin use is ' + marginPct.toFixed(0) + '% of equity at ' + s.leverage + ':1.');
+  for (const x of ok) {
+    if (x.level === 'Very high') flag(2, x.name + ' has a very high risk rating right now (see the factors in its detail panel).');
+    else if (x.level === 'High') flag(1, x.name + ' has a high risk rating right now.');
+  }
+  for (const x of items) if (x.missing) flag(1, x.name + ' has no live data, so it is left out of these numbers.');
+  if (s.eventActive) flag(2, 'You are inside an event no-trade window.');
+
+  return { items, totalRiskPct, totalRisk, notional, lev, margin, marginPct, clusterList, limitUse, stress: totalRiskPct * 2, findings, severity: sev };
+}
+
+/* ---------- V1-style 5-tier signal, built on the v2 lean ----------
+   Buy = go long, Sell = go short (these are CFDs, so Sell means a short, not just "avoid").
+   A "Strong" label needs the lean (60+) AND a ready, aligned setup that passed the risk checks.
+   Otherwise a strong lean is capped at Moderate, so a label never promises more than the checks support. */
+function signalLabel(a, eligible) {
+  const lean = a.lean;
+  let tier = lean >= 60 ? 2 : lean >= 30 ? 1 : lean <= -60 ? -2 : lean <= -30 ? -1 : 0;
+  let note = 'Lean ' + lean + ' (Strong needs 60+ with a ready setup; Moderate needs 30+)';
+  if (Math.abs(tier) === 2 && !(eligible && a.actionable && a.dir === Math.sign(tier))) {
+    tier = Math.sign(tier);
+    note = 'Lean ' + lean + ' is strong, but there is no ready, aligned, acceptable-risk setup behind it, so it is capped at Moderate';
+  }
+  const label = tier === 2 ? 'Strong Buy' : tier === 1 ? 'Moderate Buy' : tier === 0 ? 'Hold' : tier === -1 ? 'Moderate Sell' : 'Strong Sell';
+  return { tier, label, note, cls: tier > 0 ? 'up' : tier < 0 ? 'down' : 'muted', strong: Math.abs(tier) === 2 };
+}
 /*PURE_END*/
 
 /* ---------- data providers ---------- */
@@ -453,6 +598,9 @@ function App() {
   const [selected, setSelected] = useState('XAUUSD');
   const [showSettings, setShowSettings] = useState(!loadJSON(LS.settings, null));
   const [evInput, setEvInput] = useState({ when: '', label: '' });
+  const [basket, setBasket] = useState(() => loadJSON(LS.basket, []));
+  useEffect(() => saveJSON(LS.basket, basket), [basket]);
+  const addToBasket = (market, dir) => setBasket(b => [...b.filter(x => x.market !== market), { id: market + '-' + dir, market, dir, riskPct: settingsRef.current.riskPct }]);
 
   useEffect(() => { const i = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(i); }, []);
 
@@ -541,7 +689,7 @@ function App() {
   const activeEvent = events.find(e => now >= e.ts - 15 * 60000 && now <= e.ts + 5 * 60000);
   const nextEvent = events.filter(e => e.ts > now).sort((a, b) => a.ts - b.ts)[0];
 
-  const tableRows = useMemo(() => {
+  const tableRowsBase = useMemo(() => {
     const list = MARKETS.filter(m => settings.enabled[m.id]).map(m => {
       const a = rows[m.id];
       const ok = a && !a.error;
@@ -568,6 +716,32 @@ function App() {
       return sort.dir === 'asc' ? c : -c;
     });
   }, [rows, settings, sort, now, activeEvent, sessionOpen.tokyo, sessionOpen.hk, sessionOpen.shanghai, sessionOpen.london, sessionOpen.ny]);
+
+  /* ----- risk + recommendations ----- */
+  const eventMinutes = nextEvent ? (nextEvent.ts - now) / 60000 : null;
+  const ctxFor = (r) => ({ core: r.core, stale: r.stale, dataOld: r.dataOld, eventActive: !!activeEvent, eventMinutes, weekendGap: isWeekendGapRisk(now), equity: settings.equity, riskPct: settings.riskPct, stopMult: settings.stopMult });
+  const riskFor = (r, dir) => r.ok ? riskAssess(r.a, dir, ctxFor(r)) : null;
+  const suggDir = (a) => a.dir || (a.lean >= 0 ? 1 : -1);
+  const tableRows = tableRowsBase.map(r => r.ok ? { ...r, risk: riskFor(r, suggDir(r.a)) } : r);
+
+  const candidates = tableRows.filter(r => r.tradeable && r.risk.level !== 'Very high')
+    .map(r => ({ r, rank: Math.abs(r.a.lean) - r.risk.score * 0.5 })).sort((x, y) => y.rank - x.rank).slice(0, 3);
+  const candidateIds = new Set(candidates.map(c => c.r.m.id));
+  const readyCount = tableRows.filter(r => r.tradeable).length;
+  const standAside = tableRows.filter(r => !candidateIds.has(r.m.id)).map(r => {
+    if (!r.ok) return { r, score: -1, reason: (r.a && r.a.error) ? r.a.error : 'No data yet' };
+    if (r.tradeable) return { r, score: Math.abs(r.a.lean), reason: 'Setup is ready, but risk is ' + r.risk.level.toLowerCase() + (r.risk.factors[0] ? ': ' + r.risk.factors[0].text : '') };
+    return { r, score: Math.abs(r.a.lean), reason: blockers(r.a, { stale: r.stale, dataOld: r.dataOld, event: !!activeEvent, wide: r.wide, core: r.core }, settings.minScore)[0] || 'No edge right now' };
+  }).sort((x, y) => y.score - x.score);
+
+  const basketInfo = {};
+  basket.forEach(p => { const r = tableRows.find(x => x.m.id === p.market); if (r && r.ok) basketInfo[p.market] = { a: r.a, risk: riskFor(r, p.dir) }; });
+  const ba = basket.length ? basketAssess(basket, { equity: settings.equity, stopMult: settings.stopMult, dailyLossPct: settings.dailyLossPct, leverage: settings.leverage, eventActive: !!activeEvent }, basketInfo) : null;
+  const sevStyle = (n) => ({ color: n === 2 ? 'var(--down)' : n === 1 ? 'var(--warn)' : 'var(--up)' });
+  const riskCls = (lvl) => lvl === 'Low' ? 'up' : lvl === 'High' ? 'warn' : lvl === 'Very high' ? 'down' : '';
+  const signalFor = (r) => r.ok ? signalLabel(r.a, r.tradeable && r.risk.level !== 'Very high') : null;
+  const signalBadge = (r) => { const sg = signalFor(r); return sg ? html`<span className=${'tag ' + sg.cls} style=${{ fontWeight: sg.strong ? 600 : 400, borderColor: sg.tier === 0 ? 'var(--line)' : (sg.tier > 0 ? 'var(--up)' : 'var(--down)') }} title=${sg.note}>${sg.label}</span>` : null; };
+  const riskBadge = (rk) => rk ? html`<span className=${'tag ' + riskCls(rk.level)} title=${rk.factors.slice(0, 4).map(f => f.label + ' +' + f.pts).join('\n') || 'No risk flags'}>${rk.level} ${rk.score}</span>` : null;
 
   const headerClick = (key) => setSort(s => s.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: key === 'name' ? 'asc' : 'desc' });
   const arrow = (key) => sort.key === key ? (sort.dir === 'asc' ? ' \u25B2' : ' \u25BC') : '';
@@ -605,11 +779,14 @@ function App() {
       <span className=${'num w-9 text-right ' + (v > 0 ? 'up' : v < 0 ? 'down' : 'muted')}>${fmtSigned(v, 0)}</span>
     </div>`;
 
-  const planCol = (a, dir) => {
+  const planCol = (r, dir) => {
+    const a = r.a;
     const p = tradePlan(a, settings, dir);
+    const rk = riskFor(r, dir);
+    const inBasket = basket.some(b => b.market === r.m.id && b.dir === dir);
     return html`
-      <div className="flex-1 min-w-[220px]">
-        <div className=${'font-medium mb-2 ' + (dir > 0 ? 'up' : 'down')}>${dir > 0 ? 'Long' : 'Short'}</div>
+      <div className="flex-1 min-w-[240px]">
+        <div className="flex items-center gap-2 mb-2"><span className=${'font-medium ' + (dir > 0 ? 'up' : 'down')}>${dir > 0 ? 'Long' : 'Short'}</span>${riskBadge(rk)}</div>
         <table className="w-full text-sm num">
           <tbody>
             <tr><td className="muted !py-1">Entry (mid)</td><td className="text-right !py-1">${fmtPx(p.entry)}</td></tr>
@@ -621,6 +798,10 @@ function App() {
             <tr><td className="muted !py-1">Notional</td><td className="text-right !py-1">$${p.notional.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td></tr>
           </tbody>
         </table>
+        <div className="text-xs muted mt-2">Win rate needed to break even at a 2R target, after spread: <span className="num text-[var(--text)]">${(rk.breakevenWin * 100).toFixed(0)}%</span></div>
+        <ul className="mt-2 text-xs space-y-1">${rk.factors.slice(0, 4).map(f => html`<li key=${f.label}><span className=${'num ' + (f.pts >= 20 ? 'down' : 'warn')}>+${f.pts}</span> ${f.text}</li>`)}</ul>
+        ${rk.factors.length === 0 && html`<div className="text-xs up mt-2">No risk flags on the checks used.</div>`}
+        <button className="btn mt-3" onClick=${() => addToBasket(r.m.id, dir)}>${inBasket ? 'In risk basket' : 'Add to risk basket'}</button>
       </div>`;
   };
 
@@ -636,6 +817,38 @@ function App() {
       ] : [])
     ];
     return items.sort((x, y) => y.v - x.v);
+  };
+
+
+  const recCard = ({ r }) => {
+    const a = r.a, dir = a.dir, rk = r.risk;
+    const f = sizeFactor(rk.level);
+    const p = tradePlan(a, { equity: settings.equity, riskPct: settings.riskPct * f, stopMult: settings.stopMult }, dir);
+    return html`
+      <div key=${r.m.id} className="panel p-4 flex-1 min-w-[290px]" style=${{ borderColor: dir > 0 ? 'var(--up)' : 'var(--down)' }}>
+        <div className="flex justify-between items-start gap-2 mb-1">
+          <div>
+            <div className="text-lg font-semibold">${r.m.name} <span className=${dir > 0 ? 'up' : 'down'}>${dir > 0 ? 'long' : 'short'}</span></div>
+            <div className="muted text-sm">${a.setup} \u00B7 lean ${fmtSigned(a.lean, 0)}</div>
+          </div>
+          <div className="flex flex-wrap gap-1 justify-end">${signalBadge(r)}${riskBadge(rk)}</div>
+        </div>
+        <div className="text-xs muted mt-3 mb-1">Why it qualifies</div>
+        <ul className="text-sm space-y-1">${explain(a, dir).map((t, i) => html`<li key=${i}>${t}</li>`)}</ul>
+        ${rk.factors.length > 0 && html`<div className="text-xs muted mt-3 mb-1">Watch out for</div>
+        <ul className="text-sm space-y-1">${rk.factors.slice(0, 2).map(x => html`<li key=${x.label} className=${x.pts >= 20 ? 'down' : 'warn'}>${x.text}</li>`)}</ul>`}
+        <div className="text-xs muted mt-3 mb-1">Plan at ${Math.round(f * 100)}% of your normal size (${rk.level.toLowerCase()} risk)</div>
+        <table className="w-full text-sm num"><tbody>
+          <tr><td className="muted !py-0.5">Entry (mid)</td><td className="text-right !py-0.5">${fmtPx(p.entry)}</td></tr>
+          <tr><td className="muted !py-0.5">Stop</td><td className="text-right !py-0.5">${fmtPx(p.stop)}</td></tr>
+          <tr><td className="muted !py-0.5">Target 2R</td><td className="text-right !py-0.5">${fmtPx(p.t2)}</td></tr>
+          <tr><td className="muted !py-0.5">Units / risk</td><td className="text-right !py-0.5">${p.units} / $${p.risk.toFixed(0)} (${(settings.riskPct * f).toFixed(2)}%)</td></tr>
+        </tbody></table>
+        <div className="flex gap-2 mt-3">
+          <button className="btn" onClick=${() => { setSelected(r.m.id); setTimeout(() => { const el = document.getElementById('detail-panel'); if (el) el.scrollIntoView({ behavior: 'smooth' }); }, 50); }}>Open details</button>
+          <button className="btn" onClick=${() => addToBasket(r.m.id, dir)}>${basket.some(b => b.market === r.m.id && b.dir === dir) ? 'In risk basket' : 'Add to risk basket'}</button>
+        </div>
+      </div>`;
   };
 
   /* =====================================================================
@@ -714,6 +927,10 @@ function App() {
           <input type="number" className="num" value=${settings.minScore} onChange=${(e) => upd('minScore', clamp(+e.target.value || 0, 0, 100))} /></label>
         <label className="flex flex-col gap-1"><span className="muted">Journal entry expires after (hours)</span>
           <input type="number" min="1" className="num" value=${settings.expireHours} onChange=${(e) => upd('expireHours', Math.max(1, +e.target.value || 4))} /></label>
+        <label className="flex flex-col gap-1"><span className="muted">Daily loss limit (% of equity)</span>
+          <input type="number" step="0.5" className="num" value=${settings.dailyLossPct} onChange=${(e) => upd('dailyLossPct', Math.max(0, +e.target.value || 0))} /></label>
+        <label className="flex flex-col gap-1"><span className="muted">Assumed leverage for margin estimates (x:1)</span>
+          <input type="number" min="1" className="num" value=${settings.leverage} onChange=${(e) => upd('leverage', Math.max(1, +e.target.value || 1))} /></label>
         <label className="flex items-center gap-2"><input type="checkbox" checked=${settings.drivers} onChange=${(e) => upd('drivers', e.target.checked)} /> Fetch cross-market drivers</label>
       </div>
 
@@ -745,6 +962,23 @@ function App() {
       </details>
     </div>`}
 
+    <div className="panel p-4 mb-4">
+      <div className="flex flex-wrap justify-between items-baseline gap-2 mb-3">
+        <h2 className="text-lg font-semibold">Recommendations</h2>
+        <span className="muted text-sm">${anyData ? readyCount + ' of ' + tableRows.length + ' markets have a ready setup' : 'Press Update data to scan'}</span>
+      </div>
+      ${anyData && candidates.length > 0 && html`<div className="flex flex-wrap gap-3 mb-3">${candidates.map(recCard)}</div>`}
+      ${anyData && candidates.length === 0 && html`<div className="text-sm mb-3">No candidates right now. Standing aside is a valid position.${nextEvent ? ' Next scheduled event: ' + nextEvent.label + ' at ' + fmtMel(nextEvent.ts) + '.' : ''}</div>`}
+      ${anyData && standAside.length > 0 && html`
+        <div className="text-xs muted mb-1">${candidates.length ? 'Not candidates' : 'Closest to a setup first'}</div>
+        <div>${standAside.map(x => html`<div key=${x.r.m.id} className="flex flex-wrap gap-x-3 text-sm py-1" style=${{ borderTop: '1px solid var(--line)' }}>
+          <span className="font-medium" style=${{ width: 120 }}>${x.r.m.name}</span>
+          <span style=${{ width: 130 }}>${signalBadge(x.r)}</span>
+          <span className="muted flex-1 min-w-[220px]">${x.reason}</span>
+        </div>`)}</div>`}
+      <div className="muted text-xs mt-3">These are screening results from the rules explained at the bottom of the page, not personal advice. Size shown is scaled by risk level (Low 100%, Moderate 75%, High 50%); Very high risk setups are not shown as candidates.</div>
+    </div>
+
     <div className="panel overflow-x-auto mb-4">
       <table className="w-full text-sm">
         <thead>
@@ -758,7 +992,9 @@ function App() {
             ${th('adx', 'ADX', 'Trend strength. Below 20 = range, above 22 = trend')}
             ${th('rvol', 'Rel. vol', 'Tick volume so far today vs same time on prior days')}
             ${th('lean', 'Lean', 'Sort: actionable setups first, then by strength', 'text-center')}
+            <th className="text-left" title="Lean turned into a 5-tier label. Strong needs a ready, aligned, acceptable-risk setup">Signal</th>
             <th className="text-left">Setup</th>
+            <th className="text-left" title="Risk rating for the suggested direction. Hover a badge for the factors">Risk</th>
             ${th('spreadPct', 'Spread', 'Spread as a share of 1 ATR. Above 25% the setup is blocked')}
             <th className="text-left">Flags</th>
           </tr>
@@ -767,8 +1003,8 @@ function App() {
           ${tableRows.map(r => {
             const { m, a } = r;
             const isSel = sel && sel.m.id === m.id;
-            if (!a) return html`<tr key=${m.id} className="row" onClick=${() => setSelected(m.id)}><td className="font-medium">${m.name}</td><td colSpan="11" className="muted">No data yet. Press Update data.</td></tr>`;
-            if (a.error) return html`<tr key=${m.id} className="row" onClick=${() => setSelected(m.id)}><td className="font-medium">${m.name}</td><td colSpan="11" className="down">${a.error}</td></tr>`;
+            if (!a) return html`<tr key=${m.id} className="row" onClick=${() => setSelected(m.id)}><td className="font-medium">${m.name}</td><td colSpan="13" className="muted">No data yet. Press Update data.</td></tr>`;
+            if (a.error) return html`<tr key=${m.id} className="row" onClick=${() => setSelected(m.id)}><td className="font-medium">${m.name}</td><td colSpan="13" className="down">${a.error}</td></tr>`;
             const faded = (r.stale || r.dataOld) ? { opacity: 0.55 } : null;
             return html`
             <tr key=${m.id} className=${'row ' + (isSel ? 'sel' : '')} style=${faded} onClick=${() => setSelected(m.id)}>
@@ -781,9 +1017,11 @@ function App() {
               <td className="num text-right" title=${a.regime}>${a.adx.toFixed(0)} <span className="muted text-xs">${a.regime}</span></td>
               <td className="num text-right">${a.rvol == null ? html`<span className="muted" title="Needs 2+ prior days with volume">-</span>` : a.rvol.toFixed(2) + 'x'}</td>
               <td>${leanBar(a.lean)}</td>
+              <td>${signalBadge(r)}</td>
               <td>${a.entryType
                 ? html`<span className=${'tag ' + (a.dir > 0 ? 'up' : 'down')} style=${{ borderColor: r.tradeable ? (a.dir > 0 ? 'var(--up)' : 'var(--down)') : 'var(--line)' }}>${a.setup}${a.actionable ? '' : ' (weak)'}</span>`
                 : html`<span className="muted text-xs">${a.setup}</span>`}</td>
+              <td>${riskBadge(r.risk)}</td>
               <td className=${'num text-right ' + (r.wide ? 'down' : '')} title=${a.spreadReal ? 'Live bid/ask spread' : 'Assumed spread (feed has no bid/ask)'}>${(r.spreadPct * 100).toFixed(0)}%${a.spreadReal ? '' : '*'}</td>
               <td>
                 ${r.tradeable && html`<span className="tag up">ready</span>`}
@@ -799,7 +1037,7 @@ function App() {
     </div>
 
     ${sel && sel.ok && html`
-    <div className="panel p-4 mb-4">
+    <div className="panel p-4 mb-4" id="detail-panel">
       <div className="flex flex-wrap justify-between gap-2 mb-3">
         <h2 className="text-lg font-semibold">${sel.m.name}: levels and risk</h2>
         <div className="muted text-sm">ATR(14) <span className="num text-[var(--text)]">${fmtPx(sel.a.atr)}</span> \u00B7 spread <span className="num text-[var(--text)]">${fmtPx(sel.a.spread)}</span> \u00B7 data ${fmtAge(now - sel.a.fetchedAt)} old</div>
@@ -819,12 +1057,52 @@ function App() {
         </div>
         <div className="flex-[2] min-w-[300px]">
           <div className="muted text-sm mb-1">Trade plan at current price (risk ${settings.riskPct}% of $${settings.equity.toLocaleString()})</div>
-          <div className="flex flex-wrap gap-6">${planCol(sel.a, 1)}${planCol(sel.a, -1)}</div>
+          <div className="flex flex-wrap gap-6">${planCol(sel, 1)}${planCol(sel, -1)}</div>
           <div className="muted text-xs mt-3">Lean breakdown: trend ${fmtSigned(sel.a.parts.trend, 0)}, VWAP ${fmtSigned(sel.a.parts.vwap, 0)}, day move ${fmtSigned(sel.a.parts.momentum, 0)}, RSI ${fmtSigned(sel.a.parts.rsi, 0)}${sel.a.regime === 'Range' ? ' (range regime: VWAP, move and RSI are inverted to fade stretches)' : ''}.
-            Units assume a USD account and $1 per point per unit. Round down to your broker's step size and check minimum size and margin.</div>
+            After 5 straight stop-outs at ${settings.riskPct}% risk each, equity would be down ${streakLoss(settings.riskPct, 5).toFixed(1)}% (10 straight: ${streakLoss(settings.riskPct, 10).toFixed(1)}%). Units assume a USD account and $1 per point per unit. Round down to your broker's step size and check minimum size and margin.</div>
         </div>
       </div>
     </div>`}
+
+    <div className="panel p-4 mb-4">
+      <div className="flex flex-wrap justify-between items-center gap-2 mb-2">
+        <h2 className="text-lg font-semibold">Risk basket</h2>
+        <button className="btn" onClick=${() => setBasket([])} disabled=${!basket.length}>Clear</button>
+      </div>
+      <p className="muted text-sm mb-3">Add trades you are considering or already have open (button in a market's detail panel or recommendation) to see their combined risk against your daily loss limit, margin and correlated exposure.</p>
+      ${!ba && html`<div className="muted text-sm">The basket is empty.</div>`}
+      ${ba && html`
+        <div className="overflow-x-auto mb-3"><table className="w-full text-sm">
+          <thead><tr><th className="text-left">Market</th><th className="text-left">Side</th><th className="text-right">Risk %</th><th className="text-right">Risk $</th><th className="text-right">Units</th><th className="text-right">Position value</th><th className="text-left">Risk rating</th><th></th></tr></thead>
+          <tbody>${ba.items.map(x => html`<tr key=${x.id} className="row" style=${{ cursor: 'default' }}>
+            <td className="font-medium">${x.name}</td>
+            <td className=${x.dir > 0 ? 'up' : 'down'}>${x.dir > 0 ? 'Long' : 'Short'}</td>
+            <td className="text-right"><input type="number" step="0.1" min="0" className="w-20 num text-right" value=${x.riskPct} onChange=${(e) => setBasket(b => b.map(y => y.id === x.id ? { ...y, riskPct: Math.max(0, +e.target.value || 0) } : y))} /></td>
+            ${x.missing ? html`<td colSpan="4" className="warn">No live data</td>` : html`
+              <td className="num text-right">$${x.plan.risk.toFixed(0)}</td>
+              <td className="num text-right">${x.plan.units}</td>
+              <td className="num text-right">$${x.plan.notional.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
+              <td><span className=${'tag ' + riskCls(x.level)}>${x.level} ${x.riskScore}</span></td>`}
+            <td><button className="btn" aria-label="Remove from basket" onClick=${() => setBasket(b => b.filter(y => y.id !== x.id))}>\u00D7</button></td>
+          </tr>`)}</tbody></table></div>
+
+        <div className="mb-3 px-4 py-3 rounded" style=${{ border: '1px solid', borderColor: sevStyle(ba.severity).color, ...sevStyle(ba.severity) }}>
+          <b>${ba.severity === 2 ? 'Too much risk' : ba.severity === 1 ? 'Caution' : 'Within your limits'}</b>
+          <ul className="text-sm mt-1 space-y-1" style=${{ color: 'var(--text)' }}>${ba.findings.map((f, i) => html`<li key=${i}><span style=${sevStyle(f.lvl)}>\u25CF</span> ${f.text}</li>`)}</ul>
+        </div>
+
+        <div className="grid gap-3 text-sm md:grid-cols-2 lg:grid-cols-4 mb-3">
+          <div><div className="muted">All stops hit</div><div className="num text-lg down">-$${ba.totalRisk.toFixed(0)} (${ba.totalRiskPct.toFixed(2)}%)</div></div>
+          <div title="Each stop slips by one extra R, as in a gap"><div className="muted">Gap stress (stops slip 1R)</div><div className="num text-lg down">-$${(ba.totalRisk * 2).toFixed(0)} (${ba.stress.toFixed(2)}%)</div></div>
+          <div><div className="muted">Position value / equity</div><div className="num text-lg">${ba.lev.toFixed(1)}x</div></div>
+          <div title=${'Assumes ' + settings.leverage + ':1. Set your broker\'s real rate in Settings'}><div className="muted">Est. margin used</div><div className="num text-lg">$${ba.margin.toLocaleString(undefined, { maximumFractionDigits: 0 })} (${ba.marginPct.toFixed(0)}%)</div></div>
+        </div>
+
+        <div className="text-sm muted">
+          Correlated groups: ${ba.clusterList.map(c => c.name + ' ' + (c.long ? c.long.toFixed(2) + '% long' : '') + (c.long && c.short ? ' / ' : '') + (c.short ? c.short.toFixed(2) + '% short' : '')).join(' \u00B7 ')}.
+          If this whole basket stopped out in a row, equity would be down ${streakLoss(ba.totalRiskPct, 1).toFixed(1)}% after one, ${streakLoss(ba.totalRiskPct, 2).toFixed(1)}% after two, ${streakLoss(ba.totalRiskPct, 3).toFixed(1)}% after three.
+        </div>`}
+    </div>
 
     ${settings.drivers && html`
     <div className="grid gap-3 md:grid-cols-3 mb-4">
@@ -879,6 +1157,12 @@ function App() {
       Lean runs from -100 (short) to +100 (long) and is built from four parts: EMA20/EMA50 trend weighted by ADX, distance from VWAP, move since the day open, and RSI, all measured in ATRs so one set of thresholds fits gold and the Nasdaq alike.
       When ADX is below 20 the market is treated as a range and the last three parts flip to fade stretches instead of following them. Setups (breakout of the prior day's range, pullback in a trend, range fade, exhaustion at an extreme) are separate rules, and an exhaustion fade is never flagged while ADX is above 35; a setup is only flagged when its direction agrees with the lean and the lean clears your minimum.
       Setups are blocked when the data is stale, the spread exceeds 25% of an ATR, or you are inside an event window.
+      <div className="text-[var(--text)] font-medium mt-3 mb-1">How the Signal labels work</div>
+      Signal turns the lean into the same five tiers as v1: Strong Buy (lean 60 or more), Moderate Buy (30 to 59), Hold (-29 to 29), Moderate Sell (-30 to -59) and Strong Sell (-60 or less). Buy means go long and Sell means go short, since these are CFDs. A Strong label is only given when a ready setup in the same direction has passed the data, spread, event and risk checks; otherwise the label is capped at Moderate. Like the lean, it is a screening label, not a forecast or advice.
+      <div className="text-[var(--text)] font-medium mt-3 mb-1">How recommendations and risk ratings work</div>
+      Only setups that pass every check (fresh data, spread under 25% of an ATR, no event window, lean above your minimum) can become candidates, ranked by lean minus half the risk score.
+      The risk score adds points for: spread cost, chasing a stretched price, off-hours trading, a scheduled event within the hour, weekend-gap exposure on Friday evenings (UTC), trading against a strong trend, a key level blocking the 2R target, stale data, and an oversized position.
+      0-24 is Low, 25-44 Moderate, 45-64 High, 65+ Very high. These weights are judgement calls, not measured probabilities. The risk basket treats several same-direction positions in the same group (US equities, Asia equities, metals) as one bet, and its gap stress simply doubles the planned loss. Margin is estimated from the leverage you enter, and real margin rates differ by product and broker.
       <div className="mt-2">Volume is tick count for CFDs, so relative volume is a rough guide. The day boundary is a fixed UTC hour, so adjust it twice a year for daylight saving. None of these thresholds have been validated; the journal above is there to test them with your own data. This tool is a screening aid, not advice, and leveraged CFDs can lose more than your stake quickly.</div>
     </div>
   </div>`;
