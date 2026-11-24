@@ -34,6 +34,10 @@
   tr.sel { background: rgba(106,167,232,.08); }
   .tag { display:inline-block; padding: 1px 7px; border-radius: 3px; font-size: 11px; border: 1px solid var(--line); margin-right: 4px; white-space: nowrap; }
   .up { color: var(--up); } .down { color: var(--down); } .warn { color: var(--warn); } .muted { color: var(--muted); }
+  .tabbtn { padding: 8px 14px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); color: var(--muted); font-size: 13px; cursor: pointer; }
+  .tabbtn.on { color: var(--text); border-color: var(--accent); background: var(--panel2); }
+  .tabbtn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  textarea { background: var(--ink); border: 1px solid var(--line); color: var(--text); border-radius: 4px; padding: 8px; font-size: 12px; width: 100%; }
   details > summary { cursor: pointer; color: var(--accent); font-size: 13px; }
   pre { background: var(--ink); border: 1px solid var(--line); border-radius: 4px; padding: 10px; font-size: 12px; overflow-x: auto; }
   @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
@@ -506,6 +510,97 @@ function signalLabel(a, eligible) {
   const label = tier === 2 ? 'Strong Buy' : tier === 1 ? 'Moderate Buy' : tier === 0 ? 'Hold' : tier === -1 ? 'Moderate Sell' : 'Strong Sell';
   return { tier, label, note, cls: tier > 0 ? 'up' : tier < 0 ? 'down' : 'muted', strong: Math.abs(tier) === 2 };
 }
+
+/* ---------- stock research (Research tab) ---------- */
+const HORIZONS = {
+  swing: 'swing trade: days to a few weeks',
+  short: 'short term: 1 to 3 months',
+  medium: 'medium term: 3 to 12 months',
+  long: 'long term: 1 to 3 years'
+};
+
+const RESEARCH_SCHEMA = {
+  ticker: 'AAPL', name: 'company name', currency: 'USD', price: 'number or null', priceDate: 'YYYY-MM-DD of that price',
+  rating: 'Buy | Hold | Sell', confidence: 'low | medium | high',
+  technical: { trend: 'text', rsi: 'number or null', support: 'text', resistance: 'text', range52w: 'text', summary: 'text' },
+  sentiment: { newsTone: 'text', analystConsensus: 'text', targetLow: 'number or null', targetMean: 'number or null', targetHigh: 'number or null', summary: 'text' },
+  fundamentals: { valuation: 'text', nextEarnings: 'text', summary: 'text' },
+  agreement: 'where technicals and sentiment agree or conflict',
+  scenarios: {
+    bull: { price: 'number', timeframe: 'text', assumption: 'text' },
+    base: { price: 'number', timeframe: 'text', assumption: 'text' },
+    bear: { price: 'number', timeframe: 'text', assumption: 'text' }
+  },
+  catalysts: ['text'], risks: ['text'], sources: [{ title: 'text', url: 'https://...' }]
+};
+
+function buildPrompt(ticker, horizonText, todayStr) {
+  return [
+    'Today is ' + todayStr + '. Research the stock ticker ' + ticker + ' using web search and give me a research view for this horizon: ' + horizonText + '.',
+    '',
+    'Cover three areas, using sources you actually found:',
+    '1. Technical: trend versus the 50 and 200 day moving averages, RSI and momentum, key support and resistance, position in the 52-week range.',
+    '2. Sentiment: recent news tone, analyst consensus and the low, mean and high price targets, notable upgrades or downgrades, earnings reaction, insider or institutional activity if reported.',
+    '3. Fundamentals and catalysts: valuation versus peers, next earnings date, key risks.',
+    '',
+    'Rules:',
+    '- Use the most recent price you can find and state its date. Never invent a number: use null when you cannot find it.',
+    '- Scenario prices (bull, base, bear) are your own reasoned scenarios with the assumption behind each and a timeframe inside the horizon. They are not predictions. Keep bull >= base >= bear.',
+    '- The rating (Buy, Hold or Sell) must agree with the scenarios and the evidence. Say plainly where technicals and sentiment disagree.',
+    '- Keep every text field to one or two sentences. Do not give personal advice.',
+    '',
+    'Reply with ONLY one JSON object, with no markdown fences and no text before or after it, in exactly this shape:',
+    JSON.stringify(RESEARCH_SCHEMA, null, 1)
+  ].join('\n');
+}
+
+function extractJson(text) {
+  const t = String(text || '').replace(/```(?:json)?/gi, '').trim();
+  try { return JSON.parse(t); } catch (e) { /* fall through to slicing */ }
+  const oi = t.indexOf('{'), ai = t.indexOf('[');
+  const useArr = ai !== -1 && (oi === -1 || ai < oi);
+  const a = useArr ? ai : oi, b = useArr ? t.lastIndexOf(']') : t.lastIndexOf('}');
+  if (a === -1 || b <= a) throw new Error('No JSON found in the output');
+  return JSON.parse(t.slice(a, b + 1));
+}
+
+function normalizeResearch(o, tickerFallback) {
+  if (!o || typeof o !== 'object' || Array.isArray(o)) throw new Error('The research output was not a JSON object');
+  const num = (x) => { if (x == null || x === '') return null; const n = typeof x === 'number' ? x : parseFloat(String(x).replace(/[$,\s]/g, '')); return isFinite(n) ? n : null; };
+  const str = (x) => x == null ? '' : String(x).slice(0, 500);
+  const arr = (x) => Array.isArray(x) ? x.map(str).filter(Boolean).slice(0, 8) : [];
+  const price = num(o.price);
+  if (!price || price <= 0) throw new Error('No usable current price in the research output');
+  const sc = o.scenarios || {};
+  const scen = (k) => { const x = sc[k] || {}; return { price: num(x.price), timeframe: str(x.timeframe), assumption: str(x.assumption) }; };
+  const bull = scen('bull'), base = scen('base'), bear = scen('bear');
+  if ([bull, base, bear].some(x => x.price == null || x.price <= 0)) throw new Error('A bull, base or bear scenario price is missing');
+  const rating = ['Buy', 'Hold', 'Sell'].includes(o.rating) ? o.rating : 'Hold';
+  const confidence = ['low', 'medium', 'high'].includes(String(o.confidence).toLowerCase()) ? String(o.confidence).toLowerCase() : 'low';
+  const t = o.technical || {}, se = o.sentiment || {}, f = o.fundamentals || {};
+  const sources = Array.isArray(o.sources) ? o.sources.filter(x => x && typeof x.url === 'string' && /^https?:\/\//i.test(x.url)).slice(0, 8).map(x => ({ title: str(x.title) || x.url, url: x.url })) : [];
+  const warnings = [];
+  if (!(bull.price >= base.price && base.price >= bear.price)) warnings.push('Scenario prices are out of order (bull should be at least base, and base at least bear).');
+  if (rating === 'Buy' && base.price < price) warnings.push('Rated Buy, but the base case is below the current price.');
+  if (rating === 'Sell' && base.price > price) warnings.push('Rated Sell, but the base case is above the current price.');
+  if ([bull, base, bear].some(x => x.price > price * 5 || x.price < price / 5)) warnings.push('A scenario price is more than 5x away from the current price. Check the units or currency.');
+  if (!sources.length) warnings.push('No sources were listed, so treat the figures as unverified.');
+  return {
+    ticker: String(o.ticker || tickerFallback || 'UNKNOWN').toUpperCase().slice(0, 12), name: str(o.name), currency: str(o.currency).slice(0, 6),
+    price, priceDate: str(o.priceDate).slice(0, 20), rating, confidence,
+    technical: { trend: str(t.trend), rsi: num(t.rsi), support: str(t.support), resistance: str(t.resistance), range52w: str(t.range52w), summary: str(t.summary) },
+    sentiment: { newsTone: str(se.newsTone), analystConsensus: str(se.analystConsensus), targetLow: num(se.targetLow), targetMean: num(se.targetMean), targetHigh: num(se.targetHigh), summary: str(se.summary) },
+    fundamentals: { valuation: str(f.valuation), nextEarnings: str(f.nextEarnings), summary: str(f.summary) },
+    agreement: str(o.agreement), scenarios: { bull, base, bear }, catalysts: arr(o.catalysts), risks: arr(o.risks), sources, warnings,
+    fetchedAt: Date.now()
+  };
+}
+
+function scenarioStats(r) {
+  const pct = (p) => (p / r.price - 1) * 100;
+  const up = r.scenarios.bull.price - r.price, down = r.price - r.scenarios.bear.price;
+  return { bull: pct(r.scenarios.bull.price), base: pct(r.scenarios.base.price), bear: pct(r.scenarios.bear.price), rr: down > 0 ? up / down : null };
+}
 /*PURE_END*/
 
 /* ---------- data providers ---------- */
@@ -566,6 +661,209 @@ const WORKER_SNIPPET = [
   '}'
 ].join('\n');
 
+
+/* =====================================================================
+   RESEARCH TAB  (stock technical + sentiment research via the Anthropic API)
+===================================================================== */
+const RS_KEYS = { cfg: 'dts2_research_cfg', results: 'dts2_research' };
+const RS_DEFAULT = { apiKey: '', model: 'claude-sonnet-5-5', horizon: 'medium', maxSearches: 5 };
+
+async function callResearch(ticker, cfg, horizonText, todayStr) {
+  const messages = [{ role: 'user', content: buildPrompt(ticker, horizonText, todayStr) }];
+  let text = '';
+  for (let turn = 0; turn < 4; turn++) {
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': cfg.apiKey.trim(),
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
+      body: JSON.stringify({
+        model: cfg.model.trim(), max_tokens: 4000,
+        tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: Math.max(1, Math.min(10, +cfg.maxSearches || 5)) }],
+        messages
+      })
+    });
+    if (!r.ok) { const t = await r.text().catch(() => ''); throw new Error('Anthropic API ' + r.status + (t ? ': ' + t.slice(0, 160) : '')); }
+    const j = await r.json();
+    text = (j.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n');
+    if (j.stop_reason === 'pause_turn') { messages.push({ role: 'assistant', content: j.content }); continue; }
+    break;
+  }
+  let obj;
+  try { obj = extractJson(text); } catch (e) { throw new Error('Could not read the reply as JSON. It began: ' + text.slice(0, 140)); }
+  return normalizeResearch(Array.isArray(obj) ? obj[0] : obj, ticker);
+}
+
+function ResearchTab() {
+  const [cfg, setCfg] = useState(() => ({ ...RS_DEFAULT, ...loadJSON(RS_KEYS.cfg, {}) }));
+  useEffect(() => saveJSON(RS_KEYS.cfg, cfg), [cfg]);
+  const [results, setResults] = useState(() => loadJSON(RS_KEYS.results, []));
+  useEffect(() => saveJSON(RS_KEYS.results, results), [results]);
+  const [input, setInput] = useState('');
+  const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
+  const [progress, setProgress] = useState('');
+  const [errors, setErrors] = useState([]);
+  const [importText, setImportText] = useState('');
+  const [importMsg, setImportMsg] = useState('');
+  const [showSettings, setShowSettings] = useState(() => !loadJSON(RS_KEYS.cfg, null));
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => { const i = setInterval(() => setNow(Date.now()), 30000); return () => clearInterval(i); }, []);
+  const upd = (k, v) => setCfg(c => ({ ...c, [k]: v }));
+  const today = new Date().toISOString().slice(0, 10);
+
+  const parseTickers = (txt) => [...new Set(txt.split(/[\s,;]+/).map(t => t.trim().toUpperCase()).filter(t => /^[A-Z][A-Z0-9.\-]{0,9}$/.test(t)))].slice(0, 8);
+
+  const run = async (tickers) => {
+    if (busyRef.current) return;
+    if (!cfg.apiKey.trim()) { setErrors(['Add your Anthropic API key in the settings above, or use the "No API key" option below.']); setShowSettings(true); return; }
+    if (!tickers.length) { setErrors(['Enter one or more tickers, for example AAPL, MSFT, NVDA.']); return; }
+    busyRef.current = true; setBusy(true); setErrors([]);
+    const errs = [];
+    for (let i = 0; i < tickers.length; i++) {
+      setProgress('Researching ' + tickers[i] + ' (' + (i + 1) + '/' + tickers.length + '). This can take up to a minute.');
+      try {
+        const r = await callResearch(tickers[i], cfg, HORIZONS[cfg.horizon], today);
+        setResults(prev => [r, ...prev.filter(x => x.ticker !== r.ticker)].slice(0, 50));
+      } catch (e) {
+        errs.push(tickers[i] + ': ' + (e.message || e) + (e instanceof TypeError ? ' (network or browser block)' : ''));
+      }
+    }
+    setErrors(errs); setProgress(''); busyRef.current = false; setBusy(false);
+  };
+
+  const doImport = () => {
+    try {
+      const obj = extractJson(importText);
+      const out = (Array.isArray(obj) ? obj : [obj]).map(o => normalizeResearch(o, 'UNKNOWN'));
+      setResults(prev => { const ids = new Set(out.map(x => x.ticker)); return [...out, ...prev.filter(x => !ids.has(x.ticker))].slice(0, 50); });
+      setImportMsg('Imported ' + out.length + ' result' + (out.length > 1 ? 's' : '') + '.'); setImportText('');
+    } catch (e) { setImportMsg('Could not import: ' + (e.message || e)); }
+  };
+
+  const ratingCls = (r) => r === 'Buy' ? 'up' : r === 'Sell' ? 'down' : 'warn';
+  const money = (r, n) => n == null ? '-' : n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + (r.currency ? ' ' + r.currency : '');
+  const line = (label, value) => value ? html`<div className="text-sm"><span className="muted">${label}: </span>${value}</div>` : null;
+  const firstTicker = parseTickers(input)[0] || 'TICKER';
+
+  const card = (r) => {
+    const st = scenarioStats(r);
+    const ageH = (now - r.fetchedAt) / 3600000;
+    const pd = Date.parse(r.priceDate);
+    const priceAgeD = isNaN(pd) ? null : (now - pd) / 86400000;
+    const box = (label, sc, pct, cls) => html`
+      <div className="flex-1 min-w-[170px] p-3 rounded" style=${{ border: '1px solid var(--line)', background: 'var(--ink)' }}>
+        <div className="muted text-xs">${label}</div>
+        <div className=${'num text-lg ' + cls}>${money(r, sc.price)}</div>
+        <div className=${'num text-sm ' + cls}>${fmtSigned(pct, 1)}% vs now</div>
+        <div className="text-xs mt-1">${sc.timeframe}</div>
+        <div className="text-xs muted mt-1">${sc.assumption}</div>
+      </div>`;
+    return html`
+    <div key=${r.ticker} className="panel p-4 mb-4">
+      <div className="flex flex-wrap justify-between items-start gap-3 mb-3">
+        <div>
+          <div className="text-xl font-semibold">${r.ticker} <span className="muted text-base font-normal">${r.name}</span></div>
+          <div className="num text-sm">${money(r, r.price)} <span className="muted">as of ${r.priceDate || 'unknown date'}</span></div>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className=${'tag ' + ratingCls(r.rating)} style=${{ fontWeight: 600, fontSize: 13 }} title="A research lean from the evidence found, not a forecast or advice">Research lean: ${r.rating}</span>
+          <span className="tag" title="How well the evidence supports the lean">confidence ${r.confidence}</span>
+          <button className="btn" disabled=${busy} onClick=${() => run([r.ticker])}>Re-run</button>
+          <button className="btn" aria-label=${'Remove ' + r.ticker} onClick=${() => setResults(prev => prev.filter(x => x.ticker !== r.ticker))}>\u00D7</button>
+        </div>
+      </div>
+
+      ${ageH > 24 && html`<div className="text-xs warn mb-2">Researched ${Math.round(ageH)}h ago. Re-run before relying on it.</div>`}
+      ${priceAgeD != null && priceAgeD > 4 && html`<div className="text-xs warn mb-2">The price is dated ${Math.round(priceAgeD)} days ago, so it may not reflect the market now.</div>`}
+      ${r.warnings.map((w, i) => html`<div key=${i} className="text-xs warn mb-1">\u25CF ${w}</div>`)}
+
+      <div className="text-xs muted mt-2 mb-1">Scenarios (reasoned cases tied to the assumptions shown, not predictions)</div>
+      <div className="flex flex-wrap gap-3">
+        ${box('Bull case', r.scenarios.bull, st.bull, 'up')}
+        ${box('Base case', r.scenarios.base, st.base, '')}
+        ${box('Bear case', r.scenarios.bear, st.bear, 'down')}
+      </div>
+      ${st.rr != null && html`<div className="text-xs muted mt-2">Upside to the bull case is <span className="num text-[var(--text)]">${st.rr.toFixed(1)}x</span> the downside to the bear case.</div>`}
+
+      <div className="grid gap-4 mt-4 md:grid-cols-3">
+        <div><div className="font-medium mb-1">Technical</div>
+          ${line('Trend', r.technical.trend)}${line('RSI', r.technical.rsi != null ? String(r.technical.rsi) : '')}${line('Support', r.technical.support)}${line('Resistance', r.technical.resistance)}${line('52-week', r.technical.range52w)}
+          <div className="text-sm muted mt-1">${r.technical.summary}</div></div>
+        <div><div className="font-medium mb-1">Sentiment</div>
+          ${line('News tone', r.sentiment.newsTone)}${line('Analysts', r.sentiment.analystConsensus)}
+          ${(r.sentiment.targetLow != null || r.sentiment.targetMean != null || r.sentiment.targetHigh != null) && html`<div className="text-sm"><span className="muted">Analyst targets: </span><span className="num">${money(r, r.sentiment.targetLow)} / ${money(r, r.sentiment.targetMean)} / ${money(r, r.sentiment.targetHigh)}</span> <span className="muted">(low / mean / high)</span></div>`}
+          <div className="text-sm muted mt-1">${r.sentiment.summary}</div></div>
+        <div><div className="font-medium mb-1">Fundamentals</div>
+          ${line('Valuation', r.fundamentals.valuation)}${line('Next earnings', r.fundamentals.nextEarnings)}
+          <div className="text-sm muted mt-1">${r.fundamentals.summary}</div></div>
+      </div>
+
+      ${r.agreement && html`<div className="text-sm mt-4"><span className="font-medium">Technicals vs sentiment: </span>${r.agreement}</div>`}
+      <div className="grid gap-4 mt-3 md:grid-cols-2 text-sm">
+        ${r.catalysts.length > 0 && html`<div><div className="font-medium mb-1">Catalysts</div><ul className="space-y-1">${r.catalysts.map((c, i) => html`<li key=${i} className="up">\u25B2 <span style=${{ color: 'var(--text)' }}>${c}</span></li>`)}</ul></div>`}
+        ${r.risks.length > 0 && html`<div><div className="font-medium mb-1">Risks</div><ul className="space-y-1">${r.risks.map((c, i) => html`<li key=${i} className="down">\u25BC <span style=${{ color: 'var(--text)' }}>${c}</span></li>`)}</ul></div>`}
+      </div>
+      ${r.sources.length > 0 && html`<div className="text-xs muted mt-3">Sources: ${r.sources.map((x, i) => html`<span key=${i}>${i ? ' \u00B7 ' : ''}<a href=${x.url} target="_blank" rel="noopener noreferrer" style=${{ color: 'var(--accent)' }}>${x.title}</a></span>`)}</div>`}
+      <div className="text-xs muted mt-2">Researched ${new Date(r.fetchedAt).toLocaleString('en-AU', { timeZone: 'Australia/Melbourne' })} (Melbourne)</div>
+    </div>`;
+  };
+
+  return html`
+  <div>
+    <div className="panel p-4 mb-4">
+      <div className="flex flex-wrap justify-between items-center gap-2 mb-2">
+        <h2 className="text-lg font-semibold">Stock research</h2>
+        <button className="btn" onClick=${() => setShowSettings(v => !v)}>${showSettings ? 'Hide settings' : 'Settings'}</button>
+      </div>
+      <p className="muted text-sm mb-3">Enter up to 8 tickers. For each one the research looks at technicals, sentiment and fundamentals from the web and returns a research lean (Buy, Hold or Sell) with bull, base and bear price scenarios and a timeframe. It is a research view built from what was found, not a prediction or advice. I am not a financial adviser.</p>
+
+      ${showSettings && html`
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4 text-sm mb-3">
+        <label className="flex flex-col gap-1 lg:col-span-2"><span className="muted">Anthropic API key</span>
+          <input type="password" autoComplete="off" value=${cfg.apiKey} onChange=${(e) => upd('apiKey', e.target.value)} placeholder="sk-ant-... (stored only in this browser)" /></label>
+        <label className="flex flex-col gap-1"><span className="muted">Model</span>
+          <input value=${cfg.model} onChange=${(e) => upd('model', e.target.value)} /></label>
+        <label className="flex flex-col gap-1"><span className="muted">Web searches per ticker (1-10)</span>
+          <input type="number" min="1" max="10" className="num" value=${cfg.maxSearches} onChange=${(e) => upd('maxSearches', Math.max(1, Math.min(10, +e.target.value || 5)))} /></label>
+        <div className="muted text-xs md:col-span-2 lg:col-span-4">API usage is billed to your Anthropic account (separately from a Claude chat plan), and each ticker runs several web searches, so set a spend limit in the Anthropic console. The key is saved in this browser's local storage and sent only to api.anthropic.com. Anyone who can open this browser profile can read it, so use a dedicated key with a low limit and revoke it if the file or profile is shared.</div>
+      </div>`}
+
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="flex flex-col gap-1 text-sm flex-1 min-w-[240px]"><span className="muted">Tickers (comma or space separated)</span>
+          <input value=${input} onChange=${(e) => setInput(e.target.value)} onKeyDown=${(e) => e.key === 'Enter' && !busy && run(parseTickers(input))} placeholder="e.g. AAPL, MSFT, NVDA (add .AX for ASX, like BHP.AX)" /></label>
+        <label className="flex flex-col gap-1 text-sm"><span className="muted">Horizon</span>
+          <select value=${cfg.horizon} onChange=${(e) => upd('horizon', e.target.value)}>
+            ${Object.entries(HORIZONS).map(([k, v]) => html`<option key=${k} value=${k}>${v}</option>`)}</select></label>
+        <button className="btn btn-primary" disabled=${busy} onClick=${() => run(parseTickers(input))}>${busy ? 'Researching...' : 'Run research'}</button>
+      </div>
+      ${progress && html`<div className="text-sm muted mt-3">${progress}</div>`}
+      ${errors.length > 0 && html`<div className="text-xs down mt-3">${errors.map((e, i) => html`<div key=${i}>${e}</div>`)}</div>`}
+
+      <details className="mt-4">
+        <summary>No API key? Run the research in Claude chat and import it here</summary>
+        <p className="muted text-sm my-2">Copy this prompt into a Claude chat that has web search turned on (one ticker per message), then paste the JSON it returns below. The prompt uses the first ticker you typed above and your chosen horizon.</p>
+        <textarea readOnly rows="8" value=${buildPrompt(firstTicker, HORIZONS[cfg.horizon], today)} onFocus=${(e) => e.target.select()}></textarea>
+        <button className="btn mt-2" onClick=${() => { try { navigator.clipboard.writeText(buildPrompt(firstTicker, HORIZONS[cfg.horizon], today)); } catch (e) { /* select the text manually */ } }}>Copy prompt</button>
+        <div className="muted text-sm mt-3 mb-1">Paste the JSON result (one object, or a list of them)</div>
+        <textarea rows="5" value=${importText} onChange=${(e) => setImportText(e.target.value)} placeholder="{ ... }"></textarea>
+        <div className="flex items-center gap-3 mt-2"><button className="btn" onClick=${doImport} disabled=${!importText.trim()}>Import</button><span className="text-sm muted">${importMsg}</span></div>
+      </details>
+    </div>
+
+    ${results.length === 0 && html`<div className="panel p-4 muted text-sm">No research yet. Enter some tickers and press Run research.</div>`}
+    ${results.map(card)}
+
+    <div className="panel p-4 text-sm muted leading-relaxed">
+      <div className="text-[var(--text)] font-medium mb-1">Read this before relying on it</div>
+      Prices, indicators and analyst figures come from web pages found at the time and can lag the market, so check the date on each result and confirm levels on your charting platform. Analyst price targets are often wrong and tend to follow price. Scenario prices are reasoned cases built on the assumptions shown, and the timeframes are rough. A research lean says what the evidence favours, not what will happen, and it knows nothing about your goals, risk tolerance or tax position. For decisions about real money, consider speaking to a licensed financial adviser.
+    </div>
+  </div>`;
+}
+
 /* =====================================================================
    APP
 ===================================================================== */
@@ -597,6 +895,7 @@ function App() {
   const [sort, setSort] = useState({ key: 'lean', dir: 'desc' });
   const [selected, setSelected] = useState('XAUUSD');
   const [showSettings, setShowSettings] = useState(!loadJSON(LS.settings, null));
+  const [tab, setTab] = useState('scanner');
   const [evInput, setEvInput] = useState({ when: '', label: '' });
   const [basket, setBasket] = useState(() => loadJSON(LS.basket, []));
   useEffect(() => saveJSON(LS.basket, basket), [basket]);
@@ -871,6 +1170,14 @@ function App() {
       </div>
     </div>
 
+    <div role="tablist" className="flex gap-2 mb-4">
+      <button role="tab" aria-selected=${tab === 'scanner'} className=${'tabbtn ' + (tab === 'scanner' ? 'on' : '')} onClick=${() => setTab('scanner')}>CFD scanner</button>
+      <button role="tab" aria-selected=${tab === 'research'} className=${'tabbtn ' + (tab === 'research' ? 'on' : '')} onClick=${() => setTab('research')}>Stock research</button>
+    </div>
+
+    <div className=${tab === 'research' ? '' : 'hidden'}><${ResearchTab} /></div>
+
+    <div className=${tab === 'scanner' ? '' : 'hidden'}>
     ${activeEvent && html`<div className="panel px-4 py-3 mb-3 warn" style=${{ borderColor: 'var(--warn)' }}>
       No-trade window: <b>${activeEvent.label}</b> at ${fmtMel(activeEvent.ts)}. Setups are suppressed from 15 min before to 5 min after.</div>`}
     ${!activeEvent && nextEvent && html`<div className="panel px-4 py-2 mb-3 text-sm muted">
@@ -1164,6 +1471,7 @@ function App() {
       The risk score adds points for: spread cost, chasing a stretched price, off-hours trading, a scheduled event within the hour, weekend-gap exposure on Friday evenings (UTC), trading against a strong trend, a key level blocking the 2R target, stale data, and an oversized position.
       0-24 is Low, 25-44 Moderate, 45-64 High, 65+ Very high. These weights are judgement calls, not measured probabilities. The risk basket treats several same-direction positions in the same group (US equities, Asia equities, metals) as one bet, and its gap stress simply doubles the planned loss. Margin is estimated from the leverage you enter, and real margin rates differ by product and broker.
       <div className="mt-2">Volume is tick count for CFDs, so relative volume is a rough guide. The day boundary is a fixed UTC hour, so adjust it twice a year for daylight saving. None of these thresholds have been validated; the journal above is there to test them with your own data. This tool is a screening aid, not advice, and leveraged CFDs can lose more than your stake quickly.</div>
+    </div>
     </div>
   </div>`;
 }
