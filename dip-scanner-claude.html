@@ -534,9 +534,11 @@ const RESEARCH_SCHEMA = {
   catalysts: ['text'], risks: ['text'], sources: [{ title: 'text', url: 'https://...' }]
 };
 
-function buildPrompt(ticker, horizonText, todayStr) {
+function buildPrompt(tickers, horizonText, todayStr) {
+  const list = [].concat(tickers);
+  const multi = list.length > 1;
   return [
-    'Today is ' + todayStr + '. Research the stock ticker ' + ticker + ' using web search and give me a research view for this horizon: ' + horizonText + '.',
+    'Today is ' + todayStr + '. Research ' + (multi ? 'each of these stock tickers: ' + list.join(', ') : 'the stock ticker ' + list[0]) + ' using web search and give me a research view for this horizon: ' + horizonText + '.',
     '',
     'Cover three areas, using sources you actually found:',
     '1. Technical: trend versus the 50 and 200 day moving averages, RSI and momentum, key support and resistance, position in the 52-week range.',
@@ -549,7 +551,8 @@ function buildPrompt(ticker, horizonText, todayStr) {
     '- The rating (Buy, Hold or Sell) must agree with the scenarios and the evidence. Say plainly where technicals and sentiment disagree.',
     '- Keep every text field to one or two sentences. Do not give personal advice.',
     '',
-    'Reply with ONLY one JSON object, with no markdown fences and no text before or after it, in exactly this shape:',
+    multi ? 'Do every ticker separately and do not skip any. Reply with ONLY one JSON array containing one object per ticker, with no markdown fences and no text before or after it. Each object must be in exactly this shape:'
+          : 'Reply with ONLY one JSON object, with no markdown fences and no text before or after it, in exactly this shape:',
     JSON.stringify(RESEARCH_SCHEMA, null, 1)
   ].join('\n');
 }
@@ -719,7 +722,7 @@ function ResearchTab() {
 
   const run = async (tickers) => {
     if (busyRef.current) return;
-    if (!cfg.apiKey.trim()) { setErrors(['Add your Anthropic API key in the settings above, or use the "No API key" option below.']); setShowSettings(true); return; }
+    if (!cfg.apiKey.trim()) { setErrors(['Automatic mode needs an Anthropic API key. Use Step 1 and Step 2 above instead: copy the prompt into a Claude chat and paste the reply back.']); return; }
     if (!tickers.length) { setErrors(['Enter one or more tickers, for example AAPL, MSFT, NVDA.']); return; }
     busyRef.current = true; setBusy(true); setErrors([]);
     const errs = [];
@@ -747,7 +750,14 @@ function ResearchTab() {
   const ratingCls = (r) => r === 'Buy' ? 'up' : r === 'Sell' ? 'down' : 'warn';
   const money = (r, n) => n == null ? '-' : n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + (r.currency ? ' ' + r.currency : '');
   const line = (label, value) => value ? html`<div className="text-sm"><span className="muted">${label}: </span>${value}</div>` : null;
-  const firstTicker = parseTickers(input)[0] || 'TICKER';
+  const tickersParsed = parseTickers(input);
+  const promptText = buildPrompt(tickersParsed.length ? tickersParsed : ['TICKER'], HORIZONS[cfg.horizon], today);
+  const [copyMsg, setCopyMsg] = useState('');
+  const copyPrompt = () => {
+    const done = () => setCopyMsg('Copied. Paste it into a Claude chat with web search on.');
+    const fail = () => setCopyMsg('Could not copy automatically. Click the text box and copy it by hand.');
+    try { navigator.clipboard.writeText(promptText).then(done, fail); } catch (e) { fail(); }
+  };
 
   const card = (r) => {
     const st = scenarioStats(r);
@@ -772,7 +782,7 @@ function ResearchTab() {
         <div className="flex flex-wrap items-center gap-2">
           <span className=${'tag ' + ratingCls(r.rating)} style=${{ fontWeight: 600, fontSize: 13 }} title="A research lean from the evidence found, not a forecast or advice">Research lean: ${r.rating}</span>
           <span className="tag" title="How well the evidence supports the lean">confidence ${r.confidence}</span>
-          <button className="btn" disabled=${busy} onClick=${() => run([r.ticker])}>Re-run</button>
+          <button className="btn" disabled=${busy} title=${cfg.apiKey.trim() ? 'Run the research again automatically' : 'Updates the prompt above for this ticker'} onClick=${() => cfg.apiKey.trim() ? run([r.ticker]) : (setInput(r.ticker), setImportMsg('Prompt updated for ' + r.ticker + '. Copy it in Step 1 and run it in a Claude chat.'), window.scrollTo({ top: 0, behavior: 'smooth' }))}>Re-run</button>
           <button className="btn" aria-label=${'Remove ' + r.ticker} onClick=${() => setResults(prev => prev.filter(x => x.ticker !== r.ticker))}>\u00D7</button>
         </div>
       </div>
@@ -815,42 +825,43 @@ function ResearchTab() {
   return html`
   <div>
     <div className="panel p-4 mb-4">
-      <div className="flex flex-wrap justify-between items-center gap-2 mb-2">
-        <h2 className="text-lg font-semibold">Stock research</h2>
-        <button className="btn" onClick=${() => setShowSettings(v => !v)}>${showSettings ? 'Hide settings' : 'Settings'}</button>
-      </div>
-      <p className="muted text-sm mb-3">Enter up to 8 tickers. For each one the research looks at technicals, sentiment and fundamentals from the web and returns a research lean (Buy, Hold or Sell) with bull, base and bear price scenarios and a timeframe. It is a research view built from what was found, not a prediction or advice. I am not a financial adviser.</p>
+      <h2 className="text-lg font-semibold mb-1">Stock research</h2>
+      <p className="muted text-sm mb-3">Technical, sentiment and fundamental research on stock tickers, ending in a research lean (Buy, Hold or Sell) with bull, base and bear price scenarios and a timeframe. No API key is needed: you run a prompt in a Claude chat that has web search, then paste the reply here to turn it into saved, comparable cards. It is a research view built from what was found, not a prediction or advice. I am not a financial adviser.</p>
 
-      ${showSettings && html`
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4 text-sm mb-3">
-        <label className="flex flex-col gap-1 lg:col-span-2"><span className="muted">Anthropic API key</span>
-          <input type="password" autoComplete="off" value=${cfg.apiKey} onChange=${(e) => upd('apiKey', e.target.value)} placeholder="sk-ant-... (stored only in this browser)" /></label>
-        <label className="flex flex-col gap-1"><span className="muted">Model</span>
-          <input value=${cfg.model} onChange=${(e) => upd('model', e.target.value)} /></label>
-        <label className="flex flex-col gap-1"><span className="muted">Web searches per ticker (1-10)</span>
-          <input type="number" min="1" max="10" className="num" value=${cfg.maxSearches} onChange=${(e) => upd('maxSearches', Math.max(1, Math.min(10, +e.target.value || 5)))} /></label>
-        <div className="muted text-xs md:col-span-2 lg:col-span-4">API usage is billed to your Anthropic account (separately from a Claude chat plan), and each ticker runs several web searches, so set a spend limit in the Anthropic console. The key is saved in this browser's local storage and sent only to api.anthropic.com. Anyone who can open this browser profile can read it, so use a dedicated key with a low limit and revoke it if the file or profile is shared.</div>
-      </div>`}
-
-      <div className="flex flex-wrap items-end gap-3">
-        <label className="flex flex-col gap-1 text-sm flex-1 min-w-[240px]"><span className="muted">Tickers (comma or space separated)</span>
-          <input value=${input} onChange=${(e) => setInput(e.target.value)} onKeyDown=${(e) => e.key === 'Enter' && !busy && run(parseTickers(input))} placeholder="e.g. AAPL, MSFT, NVDA (add .AX for ASX, like BHP.AX)" /></label>
+      <div className="flex flex-wrap items-end gap-3 mb-4">
+        <label className="flex flex-col gap-1 text-sm flex-1 min-w-[240px]"><span className="muted">Tickers (comma or space separated, up to 8)</span>
+          <input value=${input} onChange=${(e) => setInput(e.target.value)} placeholder="e.g. AAPL, MSFT, NVDA (add .AX for ASX, like BHP.AX)" /></label>
         <label className="flex flex-col gap-1 text-sm"><span className="muted">Horizon</span>
           <select value=${cfg.horizon} onChange=${(e) => upd('horizon', e.target.value)}>
             ${Object.entries(HORIZONS).map(([k, v]) => html`<option key=${k} value=${k}>${v}</option>`)}</select></label>
-        <button className="btn btn-primary" disabled=${busy} onClick=${() => run(parseTickers(input))}>${busy ? 'Researching...' : 'Run research'}</button>
       </div>
-      ${progress && html`<div className="text-sm muted mt-3">${progress}</div>`}
-      ${errors.length > 0 && html`<div className="text-xs down mt-3">${errors.map((e, i) => html`<div key=${i}>${e}</div>`)}</div>`}
 
-      <details className="mt-4">
-        <summary>No API key? Run the research in Claude chat and import it here</summary>
-        <p className="muted text-sm my-2">Copy this prompt into a Claude chat that has web search turned on (one ticker per message), then paste the JSON it returns below. The prompt uses the first ticker you typed above and your chosen horizon.</p>
-        <textarea readOnly rows="8" value=${buildPrompt(firstTicker, HORIZONS[cfg.horizon], today)} onFocus=${(e) => e.target.select()}></textarea>
-        <button className="btn mt-2" onClick=${() => { try { navigator.clipboard.writeText(buildPrompt(firstTicker, HORIZONS[cfg.horizon], today)); } catch (e) { /* select the text manually */ } }}>Copy prompt</button>
-        <div className="muted text-sm mt-3 mb-1">Paste the JSON result (one object, or a list of them)</div>
-        <textarea rows="5" value=${importText} onChange=${(e) => setImportText(e.target.value)} placeholder="{ ... }"></textarea>
-        <div className="flex items-center gap-3 mt-2"><button className="btn" onClick=${doImport} disabled=${!importText.trim()}>Import</button><span className="text-sm muted">${importMsg}</span></div>
+      <div className="font-medium text-sm mb-1">Step 1. Copy this prompt into a Claude chat</div>
+      <p className="muted text-xs mb-2">Use a chat with web search turned on. ${tickersParsed.length > 3 ? 'That is a lot for one message, and the research gets shallower as the list grows, so consider splitting it into groups of 3.' : 'Up to 3 tickers per message works best.'}</p>
+      <textarea readOnly rows="6" value=${promptText} onFocus=${(e) => e.target.select()}></textarea>
+      <div className="flex items-center gap-3 mt-2 mb-4">
+        <button className="btn btn-primary" onClick=${copyPrompt}>Copy prompt</button>
+        <span className="text-sm muted">${copyMsg}</span>
+      </div>
+
+      <div className="font-medium text-sm mb-1">Step 2. Paste Claude's JSON reply here</div>
+      <textarea rows="5" value=${importText} onChange=${(e) => setImportText(e.target.value)} placeholder="Paste the JSON here (one result, or a list of them)"></textarea>
+      <div className="flex items-center gap-3 mt-2"><button className="btn btn-primary" onClick=${doImport} disabled=${!importText.trim()}>Import</button><span className="text-sm muted">${importMsg}</span></div>
+
+      <details className="mt-5">
+        <summary>Automatic mode (optional, needs an Anthropic API key)</summary>
+        <p className="muted text-sm my-2">Skip the copy and paste by letting this page run the research itself. API usage is billed to an Anthropic account, separately from a Claude chat plan, and each ticker runs several web searches, so set a spend limit. The key is saved in this browser only. Ignore this section if you have no key.</p>
+        <div className="grid gap-4 md:grid-cols-3 text-sm mb-3">
+          <label className="flex flex-col gap-1"><span className="muted">Anthropic API key</span>
+            <input type="password" autoComplete="off" value=${cfg.apiKey} onChange=${(e) => upd('apiKey', e.target.value)} placeholder="sk-ant-..." /></label>
+          <label className="flex flex-col gap-1"><span className="muted">Model</span>
+            <input value=${cfg.model} onChange=${(e) => upd('model', e.target.value)} /></label>
+          <label className="flex flex-col gap-1"><span className="muted">Web searches per ticker (1-10)</span>
+            <input type="number" min="1" max="10" className="num" value=${cfg.maxSearches} onChange=${(e) => upd('maxSearches', Math.max(1, Math.min(10, +e.target.value || 5)))} /></label>
+        </div>
+        <button className="btn" disabled=${busy} onClick=${() => run(tickersParsed)}>${busy ? 'Researching...' : 'Run research automatically'}</button>
+        ${progress && html`<div className="text-sm muted mt-3">${progress}</div>`}
+        ${errors.length > 0 && html`<div className="text-xs down mt-3">${errors.map((e, i) => html`<div key=${i}>${e}</div>`)}</div>`}
       </details>
     </div>
 
