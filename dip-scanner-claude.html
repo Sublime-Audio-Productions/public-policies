@@ -349,8 +349,10 @@ function journalStats(journal) {
 }
 
 /* ---------- sessions (DST-correct via Intl) ---------- */
+const _dtfCache = {};   // building an Intl.DateTimeFormat is slow, so build each one once
+function cachedDtf(key, tz, opts) { const k = key + '|' + tz; return _dtfCache[k] || (_dtfCache[k] = new Intl.DateTimeFormat('en-US', { timeZone: tz, ...opts })); }
 function tzOffsetMs(tz, t) {
-  const p = new Intl.DateTimeFormat('en-US', { timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  const p = cachedDtf('full', tz, { hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
     .formatToParts(new Date(t)).reduce((o, x) => (o[x.type] = x.value, o), {});
   const asUtc = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second);
   return asUtc - Math.floor(t / 1000) * 1000;
@@ -358,7 +360,7 @@ function tzOffsetMs(tz, t) {
 
 function sessionInfo(key, nowMs) {
   const s = SESSIONS[key];
-  const p = new Intl.DateTimeFormat('en-US', { timeZone: s.tz, year: 'numeric', month: '2-digit', day: '2-digit' })
+  const p = cachedDtf('date', s.tz, { year: 'numeric', month: '2-digit', day: '2-digit' })
     .formatToParts(new Date(nowMs)).reduce((o, x) => (o[x.type] = x.value, o), {});
   const y = +p.year, m = +p.month - 1, d = +p.day;
   const toUtc = (hm) => { const g = Date.UTC(y, m, d, hm[0], hm[1]); return g - tzOffsetMs(s.tz, g); };
@@ -603,6 +605,85 @@ function scenarioStats(r) {
   const pct = (p) => (p / r.price - 1) * 100;
   const up = r.scenarios.bull.price - r.price, down = r.price - r.scenarios.bear.price;
   return { bull: pct(r.scenarios.bull.price), base: pct(r.scenarios.base.price), bear: pct(r.scenarios.bear.price), rr: down > 0 ? up / down : null };
+}
+
+/* ---------- Stock Tracker (eToro 24/5 tickers) ---------- */
+const TRACKER_DEFAULT_SYMBOLS = ['NVDA', 'AMD', 'SNDK', 'SPCX', 'INTC', 'PLTR', 'GOOG', 'IOND', 'ANT.24-7', 'MU', 'ALAB', 'NBIS', 'Coffee.FUT', 'COCOA.FUT', 'ZINC', 'PLATINUM'];
+
+// eToro's "24-7" instruments (for example ANT.24-7) also trade through the weekend
+const is247 = (sym, name) => /24[-\/]7/i.test(String(sym || '') + ' ' + String(name || ''));
+
+function parseSymbols(text) {
+  return [...new Set(String(text || '').toUpperCase().split(/[\s,;]+/).filter(Boolean))].slice(0, 40);
+}
+
+function normalizeBase(u) {
+  let b = String(u || '').trim();
+  if (!b) return '';
+  if (!/^https?:\/\//i.test(b)) b = 'https://' + b;
+  return b.replace(/\/+$/, '');
+}
+
+function nyMinutes(t) {
+  const p = cachedDtf('nyhm', 'America/New_York', { hourCycle: 'h23', hour: '2-digit', minute: '2-digit' }).formatToParts(new Date(t)).reduce((o, x) => (o[x.type] = x.value, o), {});
+  return +p.hour * 60 + +p.minute;
+}
+
+// Which part of the eToro 24/5 week it is. Pre-market 04:00, regular 09:30 to 16:00, after-hours to 20:00, then overnight (New York time).
+function usSessionLabel(nowMs) {
+  const p = cachedDtf('nywd', 'America/New_York', { weekday: 'short', hourCycle: 'h23', hour: '2-digit', minute: '2-digit' }).formatToParts(new Date(nowMs)).reduce((o, x) => (o[x.type] = x.value, o), {});
+  const mins = +p.hour * 60 + +p.minute, wd = p.weekday;
+  if (wd === 'Sat' || (wd === 'Fri' && mins >= 1200) || (wd === 'Sun' && mins < 1200)) return 'Weekend';   // 24/5: Sunday 20:00 to Friday 20:00
+  if (mins >= 570 && mins < 960) return 'Regular';
+  if (mins >= 240 && mins < 570) return 'Pre-market';
+  if (mins >= 960 && mins < 1200) return 'After-hours';
+  return 'Overnight';
+}
+
+// Close of the last regular-hours candle (09:30 to 16:00 New York) before after-hours began. null if there is none in the data.
+// Early-close days (such as the day after Thanksgiving) are not detected, so the normal 16:00 close is used on those days.
+function lastRegularClose(candles) {
+  const inReg = (t) => { const m = nyMinutes(t); return m >= 570 && m < 960; };
+  let next = candles.length ? inReg(candles[candles.length - 1].t) : false;
+  for (let i = candles.length - 2; i >= 0; i--) {
+    const cur = inReg(candles[i].t);
+    if (cur && !next) return candles[i].c;
+    next = cur;
+  }
+  return null;
+}
+
+// data = the Worker's reply { name, type, exchange, candles: [[t,o,h,l,c,v], ...] }, oldest first
+function buildTrackerEntry(sym, data, s, spreadPct, nowMs) {
+  const candles = (data.candles || []).map(c => ({ t: c[0], o: c[1], h: c[2], l: c[3], c: c[4], v: c[5] || 0, bid: null, ask: null }));
+  if (!candles.length) return { symbol: sym, name: data.name, type: data.type, error: 'eToro returned no candles' };
+  const last = candles[candles.length - 1];
+  const a = analyze(candles, { gran: 'M15', rolloverUtc: s.rolloverUtc, minScore: s.minScore }, last.c * spreadPct / 100, nowMs);
+  if (a.error) return { symbol: sym, name: data.name, type: data.type, error: a.error };
+  const isStock = /stock/i.test(data.type || '');
+  const hi = Math.max(...candles.map(c => c.h));
+  return {
+    symbol: sym, name: data.name || sym, type: data.type || '', exchange: data.exchange || '', a, isStock, is247: is247(sym, data.name),
+    refClose: isStock ? lastRegularClose(candles) : a.pdc,            // stocks: last regular close; others: prior trading day's close
+    dipPct: (a.price / hi - 1) * 100, windowHigh: hi, windowDays: (last.t - candles[0].t) / 86400000, fetchedAt: nowMs
+  };
+}
+
+// ctx: { equity, riskPct, stopMult, eventActive, eventMinutes }
+function buildTrackerRow(e, ctx, nowMs) {
+  const a = e.a;
+  const stale = nowMs - a.lastT > 45 * 60000;                        // 3 candles of 15 minutes
+  const dataOld = nowMs - e.fetchedAt > 180000;
+  const wide = a.spread > 0.25 * a.atr;
+  const core = e.isStock ? sessionInfo('ny', nowMs).isOpen : true;   // regular US hours are "core"; overnight trading is thinner
+  const tradeable = a.actionable && !stale && !dataOld && !wide && !ctx.eventActive;
+  const dir = a.dir || (a.lean >= 0 ? 1 : -1);
+  const risk = riskAssess(a, dir, { core, stale, dataOld, eventActive: ctx.eventActive, eventMinutes: ctx.eventMinutes, weekendGap: isWeekendGapRisk(nowMs) && !e.is247, equity: ctx.equity, riskPct: ctx.riskPct, stopMult: ctx.stopMult });
+  const sig = signalLabel(a, tradeable && risk.level !== 'Very high');
+  const base = e.isStock ? usSessionLabel(nowMs) : (stale ? 'Closed' : 'Open');
+  return { ...e, stale, dataOld, wide, core, tradeable, risk, sig, dir,
+    session: e.is247 ? (stale ? 'Closed' : base === 'Weekend' ? 'Weekend (open)' : base) : base,   // 24/7 instruments keep trading at the weekend
+    chgPct: e.refClose ? (a.price / e.refClose - 1) * 100 : null };
 }
 /*PURE_END*/
 
@@ -874,6 +955,259 @@ function ResearchTab() {
     </div>
   </div>`;
 }
+
+
+/* =====================================================================
+   STOCK TRACKER TAB  (eToro 24/5 tickers, fetched through your alerts Worker so the eToro keys never sit in this page)
+===================================================================== */
+const TR_KEYS = { cfg: 'dts2_tracker', cache: 'dts2_tracker_cache' };
+const TR_DEFAULT = { workerUrl: '', workerKey: '', symbols: TRACKER_DEFAULT_SYMBOLS.join('\n'), spreadPct: 0.05, refreshSec: 60, auto: false };
+const trShort = (n) => String(n || '').replace(/,?\s+(Corporation|Corp\.?|Incorporated|Inc\.?|Limited|Ltd\.?|plc)\.?$/i, '');
+
+async function trPool(items, n, fn) {
+  let i = 0;
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, async () => { while (i < items.length) { const k = i++; await fn(items[k], k); } }));
+}
+
+function TrackerTab({ settings, events, now }) {
+  const [cfg, setCfg] = useState(() => ({ ...TR_DEFAULT, ...loadJSON(TR_KEYS.cfg, {}) }));
+  useEffect(() => saveJSON(TR_KEYS.cfg, cfg), [cfg]);
+  const cfgRef = useRef(cfg); cfgRef.current = cfg;
+  const settingsRef = useRef(settings); settingsRef.current = settings;
+  const [entries, setEntries] = useState(() => loadJSON(TR_KEYS.cache, {}).entries || {});
+  useEffect(() => saveJSON(TR_KEYS.cache, { entries }), [entries]);
+  const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
+  const [progress, setProgress] = useState('');
+  const [sort, setSort] = useState({ key: 'lean', dir: 'desc' });
+  const [filter, setFilter] = useState('all');
+  const [selected, setSelected] = useState(null);
+  const [showSettings, setShowSettings] = useState(() => !loadJSON(TR_KEYS.cfg, null));
+  const [q, setQ] = useState('');
+  const [found, setFound] = useState(null);
+  const upd = (k, v) => setCfg(c => ({ ...c, [k]: v }));
+
+  const refresh = useCallback(async () => {
+    if (busyRef.current) return;
+    const c = cfgRef.current;
+    const base = normalizeBase(c.workerUrl);
+    if (!base || !c.workerKey.trim()) { setProgress('Add your Worker address and access key in Settings first.'); setShowSettings(true); return; }
+    const symbols = parseSymbols(c.symbols);
+    if (!symbols.length) { setProgress('Add some tickers in Settings first.'); setShowSettings(true); return; }
+    busyRef.current = true; setBusy(true);
+    const st = settingsRef.current;
+    let done = 0, failed = 0;
+    await trPool(symbols, 3, async (sym) => {
+      let entry;
+      try {
+        const r = await fetch(base + '/api/etoro/candles?symbol=' + encodeURIComponent(sym) + '&count=480&interval=FifteenMinutes', { headers: { 'x-access-key': c.workerKey.trim() } });
+        const j = await r.json().catch(() => ({}));
+        if (r.status === 401) entry = { symbol: sym, error: 'The Worker rejected the access key' };
+        else if (!r.ok) entry = { symbol: sym, error: j.error || ('HTTP ' + r.status), similar: j.similar };
+        else entry = buildTrackerEntry(sym, j, st, Number(c.spreadPct) || 0, Date.now());
+      } catch (e) { entry = { symbol: sym, error: 'Could not reach the Worker. Check its address, and that DASHBOARD_ORIGIN on the Worker lists this website.' }; }
+      done++; if (entry.error) failed++;
+      setProgress('Fetched ' + done + '/' + symbols.length + ' (' + sym + ')');
+      setEntries(prev => ({ ...prev, [sym]: entry }));
+    });
+    busyRef.current = false; setBusy(false);
+    setProgress('Updated ' + (symbols.length - failed) + '/' + symbols.length + ' at ' + fmtMel(Date.now()));
+  }, []);
+
+  useEffect(() => {
+    if (!cfg.auto) return;
+    const i = setInterval(() => { if (!document.hidden) refresh(); }, Math.max(30, Number(cfg.refreshSec) || 60) * 1000);
+    return () => clearInterval(i);
+  }, [cfg.auto, cfg.refreshSec, refresh]);
+
+  const search = async () => {
+    const base = normalizeBase(cfg.workerUrl);
+    if (!base || !cfg.workerKey.trim() || !q.trim()) { setFound({ error: 'Enter your Worker address, access key and something to search for.' }); return; }
+    try {
+      const r = await fetch(base + '/api/etoro/search?q=' + encodeURIComponent(q.trim()), { headers: { 'x-access-key': cfg.workerKey.trim() } });
+      const j = await r.json().catch(() => ({}));
+      setFound(r.ok ? { results: j.results || [] } : { error: r.status === 401 ? 'The Worker rejected the access key' : (j.error || 'HTTP ' + r.status) });
+    } catch (e) { setFound({ error: 'Could not reach the Worker.' }); }
+  };
+  const addSymbol = (sym) => setCfg(c => ({ ...c, symbols: [...new Set([...parseSymbols(c.symbols), String(sym).toUpperCase()])].join('\n') }));
+  const removeSymbol = (sym) => setCfg(c => ({ ...c, symbols: parseSymbols(c.symbols).filter(x => x !== sym).join('\n') }));
+
+  const syms = useMemo(() => parseSymbols(cfg.symbols), [cfg.symbols]);
+  const activeEv = events.find(e => now >= e.ts - 15 * 60000 && now <= e.ts + 5 * 60000);
+  const nextEv = events.filter(e => e.ts > now).sort((a, b) => a.ts - b.ts)[0];
+  const rows = useMemo(() => {
+    const ctx = { equity: settings.equity, riskPct: settings.riskPct, stopMult: settings.stopMult, eventActive: !!activeEv, eventMinutes: nextEv ? (nextEv.ts - now) / 60000 : null };
+    return syms.map(sym => { const e = entries[sym]; if (!e) return { symbol: sym, pending: true }; if (e.error) return e; return buildTrackerRow(e, ctx, now); });
+  }, [syms, entries, settings.equity, settings.riskPct, settings.stopMult, !!activeEv, nextEv && nextEv.ts, now]);
+
+  const good = rows.filter(r => r.a);
+  const shown = useMemo(() => {
+    const keep = rows.filter(r => filter === 'all' || (r.a && ((filter === 'buy' && r.sig.tier > 0) || (filter === 'sell' && r.sig.tier < 0) || (filter === 'dips' && r.dipPct <= -3))));
+    const val = (r) => !r.a ? null : sort.key === 'symbol' ? r.symbol : sort.key === 'price' ? r.a.price : sort.key === 'chgPct' ? r.chgPct : sort.key === 'dipPct' ? r.dipPct
+      : sort.key === 'rsi' ? r.a.rsi : sort.key === 'adx' ? r.a.adx : sort.key === 'lean' ? r.a.lean : sort.key === 'tier' ? r.sig.tier : null;
+    return keep.sort((x, y) => {
+      const a = val(x), b = val(y);
+      if (a == null && b == null) return 0; if (a == null) return 1; if (b == null) return -1;
+      const c = typeof a === 'string' ? a.localeCompare(b) : a - b;
+      return sort.dir === 'asc' ? c : -c;
+    });
+  }, [rows, filter, sort]);
+
+  const headerClick = (key) => setSort(v => v.key === key ? { key, dir: v.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: key === 'symbol' ? 'asc' : 'desc' });
+  const th = (key, label, title, align) => html`<th className=${'sortable ' + (align || 'text-right')} tabIndex="0" title=${title || ''} onClick=${() => headerClick(key)} onKeyDown=${(e) => e.key === 'Enter' && headerClick(key)}>${label}${sort.key === key ? (sort.dir === 'asc' ? ' \u25B2' : ' \u25BC') : ''}</th>`;
+  const leanBar = (v) => html`<div className="flex items-center gap-2 justify-center">
+      <div style=${{ width: 70, height: 8, background: 'var(--ink)', border: '1px solid var(--line)', position: 'relative', borderRadius: 2 }}>
+        <div style=${{ position: 'absolute', top: 0, bottom: 0, left: v >= 0 ? '50%' : (50 + v / 2) + '%', width: Math.abs(v) / 2 + '%', background: v >= 0 ? 'var(--up)' : 'var(--down)' }}></div>
+        <div style=${{ position: 'absolute', top: -2, bottom: -2, left: '50%', width: 1, background: 'var(--muted)' }}></div>
+      </div>
+      <span className=${'num w-9 text-right ' + (v > 0 ? 'up' : v < 0 ? 'down' : 'muted')}>${fmtSigned(v, 0)}</span></div>`;
+  const sigBadge = (r) => html`<span className=${'tag ' + (r.sig.tier > 0 ? 'up' : r.sig.tier < 0 ? 'down' : 'muted')} style=${{ fontWeight: r.sig.strong ? 600 : 400, borderColor: r.sig.tier === 0 ? 'var(--line)' : (r.sig.tier > 0 ? 'var(--up)' : 'var(--down)') }} title=${r.sig.note}>${r.sig.label}</span>`;
+  const riskCls = (l) => l === 'Low' ? 'up' : l === 'High' ? 'warn' : l === 'Very high' ? 'down' : '';
+  const riskBadge = (r) => html`<span className=${'tag ' + riskCls(r.risk.level)} title=${r.risk.factors.slice(0, 4).map(f => f.label + ' +' + f.pts).join('\n') || 'No risk flags'}>${r.risk.level} ${r.risk.score}</span>`;
+  const sessCls = (x) => x === 'Regular' || x === 'Open' ? 'up' : x === 'Weekend' || x === 'Closed' ? 'muted' : 'warn';
+
+  const sel = good.find(r => r.symbol === selected) || null;
+  const lastFetch = Math.max(0, ...good.map(r => r.fetchedAt));
+  const hot = good.filter(r => r.sig.tier !== 0).sort((x, y) => Math.abs(y.a.lean) - Math.abs(x.a.lean)).slice(0, 4);
+  const deep = [...good].sort((x, y) => x.dipPct - y.dipPct).slice(0, 4);
+  const errCount = rows.filter(r => r.error).length;
+  const filterBtn = (k, label) => html`<button key=${k} className=${'btn ' + (filter === k ? 'btn-primary' : '')} onClick=${() => setFilter(k)}>${label}</button>`;
+
+  const levels = (a) => {
+    const pivot = a.pdh != null ? (a.pdh + a.pdl + a.pdc) / 3 : null;
+    return [{ l: 'Price', v: a.price, me: true }, { l: 'Day high', v: a.dayHigh }, { l: 'Day low', v: a.dayLow }, { l: 'Day open', v: a.dayOpen }, { l: 'VWAP', v: a.vwap }, { l: 'EMA 20', v: a.ema20 }, { l: 'EMA 50', v: a.ema50 },
+      ...(a.pdh != null ? [{ l: 'Prior day high', v: a.pdh }, { l: 'Prior day low', v: a.pdl }, { l: 'Prior day close', v: a.pdc }, { l: 'Pivot', v: pivot }] : [])].sort((x, y) => y.v - x.v);
+  };
+  const planCol = (r, dir) => {
+    const p = tradePlan(r.a, settings, dir);
+    const rk = riskAssess(r.a, dir, { core: r.core, stale: r.stale, dataOld: r.dataOld, eventActive: !!activeEv, eventMinutes: nextEv ? (nextEv.ts - now) / 60000 : null, weekendGap: isWeekendGapRisk(now) && !r.is247, equity: settings.equity, riskPct: settings.riskPct, stopMult: settings.stopMult });
+    return html`<div className="flex-1 min-w-[220px]">
+      <div className="flex items-center gap-2 mb-2"><span className=${'font-medium ' + (dir > 0 ? 'up' : 'down')}>${dir > 0 ? 'Long' : 'Short'}</span><span className=${'tag ' + riskCls(rk.level)}>${rk.level} ${rk.score}</span></div>
+      <table className="w-full text-sm num"><tbody>
+        <tr><td className="muted !py-1">Entry (mid)</td><td className="text-right !py-1">${fmtPx(p.entry)}</td></tr>
+        <tr><td className="muted !py-1">Stop (${settings.stopMult}x ATR)</td><td className="text-right !py-1">${fmtPx(p.stop)}</td></tr>
+        <tr><td className="muted !py-1">Target 2R</td><td className="text-right !py-1">${fmtPx(p.t2)}</td></tr>
+        <tr><td className="muted !py-1">${r.isStock ? 'Shares' : 'Units'} for $${p.risk.toFixed(0)} risk</td><td className="text-right !py-1">${p.units}</td></tr>
+        <tr><td className="muted !py-1">Spread cost</td><td className="text-right !py-1">$${p.spreadCost.toFixed(2)}</td></tr>
+      </tbody></table>
+      <ul className="mt-2 text-xs space-y-1">${rk.factors.slice(0, 3).map(f => html`<li key=${f.label}><span className=${'num ' + (f.pts >= 20 ? 'down' : 'warn')}>+${f.pts}</span> ${f.text}</li>`)}</ul>
+    </div>`;
+  };
+
+  return html`
+  <div>
+    <div className="flex flex-wrap items-center gap-3 mb-4">
+      <button className="btn btn-primary" disabled=${busy} onClick=${refresh}>${busy ? 'Updating...' : 'Update tickers'}</button>
+      <label className="flex items-center gap-2 text-sm muted">
+        <input type="checkbox" checked=${cfg.auto} onChange=${(e) => upd('auto', e.target.checked)} />
+        Auto-refresh every
+        <input type="number" min="30" className="w-16 num" value=${cfg.refreshSec} onChange=${(e) => upd('refreshSec', Math.max(30, +e.target.value || 60))} /> s
+      </label>
+      <button className="btn" onClick=${() => setShowSettings(v => !v)}>${showSettings ? 'Hide settings' : 'Settings'}</button>
+      <span className="text-sm muted">${progress}${lastFetch && !busy ? ' \u00B7 data from ' + fmtAge(now - lastFetch) + ' ago' : ''}</span>
+    </div>
+
+    ${showSettings && html`
+    <div className="panel p-4 mb-4">
+      <div className="grid gap-4 md:grid-cols-2 text-sm">
+        <label className="flex flex-col gap-1"><span className="muted">Your alerts Worker address</span>
+          <input value=${cfg.workerUrl} onChange=${(e) => upd('workerUrl', e.target.value)} placeholder="https://cfd-alerts.YOURNAME.workers.dev" /></label>
+        <label className="flex flex-col gap-1"><span className="muted">Access key (the ACCESS_KEY you set on the Worker)</span>
+          <input type="password" autoComplete="off" value=${cfg.workerKey} onChange=${(e) => upd('workerKey', e.target.value)} placeholder="Saved only in this browser" /></label>
+        <label className="flex flex-col gap-1 md:row-span-2"><span className="muted">Tickers (one per line or comma separated, exact eToro symbols)</span>
+          <textarea rows="9" value=${cfg.symbols} onChange=${(e) => upd('symbols', e.target.value)}></textarea></label>
+        <label className="flex flex-col gap-1"><span className="muted">Assumed spread (% of price). eToro chart data has no bid/ask</span>
+          <input type="number" step="0.01" min="0" className="num" value=${cfg.spreadPct} onChange=${(e) => upd('spreadPct', Math.max(0, +e.target.value || 0))} /></label>
+      </div>
+      <div className="mt-4 text-sm">
+        <div className="muted mb-1">Find an exact eToro symbol</div>
+        <div className="flex gap-2"><input className="flex-1" value=${q} onChange=${(e) => setQ(e.target.value)} onKeyDown=${(e) => e.key === 'Enter' && search()} placeholder="e.g. coffee, platinum, Micron" /><button className="btn" onClick=${search}>Search</button></div>
+        ${found && found.error && html`<div className="down text-xs mt-2">${found.error}</div>`}
+        ${found && found.results && html`<div className="mt-2 text-xs">${found.results.length === 0 ? html`<span className="muted">No matches.</span>` : found.results.map(x => html`<div key=${x.id} className="flex items-center gap-3 py-1" style=${{ borderTop: '1px solid var(--line)' }}>
+            <span className="font-medium" style=${{ width: 110 }}>${x.symbol}</span><span className="muted flex-1">${x.name} \u00B7 ${x.type} \u00B7 ${x.exchange}</span><button className="btn" onClick=${() => addSymbol(x.symbol)}>Add</button></div>`)}</div>`}
+      </div>
+      <div className="muted text-xs mt-3">The prices come from eToro through your alerts Worker, so your eToro keys never sit in this page. The Worker must list this website in its DASHBOARD_ORIGIN setting. Signals use the same rules as the CFD scanner tab, including your equity, risk and minimum-lean settings there.</div>
+    </div>`}
+
+    ${activeEv && html`<div className="panel px-4 py-3 mb-3 warn" style=${{ borderColor: 'var(--warn)' }}>No-trade window: <b>${activeEv.label}</b>. Signals are held until 5 minutes after it.</div>`}
+
+    ${good.length > 0 && html`
+    <div className="grid gap-3 md:grid-cols-2 mb-4">
+      <div className="panel p-3 text-sm"><div className="font-medium mb-1">Strongest signals now</div>
+        ${hot.length === 0 ? html`<div className="muted">Nothing is leaning Buy or Sell right now.</div>` : hot.map(r => html`<div key=${r.symbol} className="flex items-center justify-between py-1" style=${{ cursor: 'pointer' }} onClick=${() => setSelected(r.symbol)}>
+          <span><b>${r.symbol}</b> <span className="muted text-xs">${r.a.setup}</span></span><span>${sigBadge(r)} <span className="num muted text-xs">${fmtSigned(r.a.lean, 0)}</span></span></div>`)}</div>
+      <div className="panel p-3 text-sm"><div className="font-medium mb-1">Deepest dips (from the ~3-day high)</div>
+        ${deep.map(r => html`<div key=${r.symbol} className="flex items-center justify-between py-1" style=${{ cursor: 'pointer' }} onClick=${() => setSelected(r.symbol)}>
+          <span><b>${r.symbol}</b> <span className="muted text-xs">${r.session}</span></span><span className=${'num ' + (r.dipPct <= -5 ? 'warn' : '')}>${r.dipPct.toFixed(1)}% ${sigBadge(r)}</span></div>`)}</div>
+    </div>`}
+
+    <div className="flex flex-wrap gap-2 mb-3 items-center">
+      ${filterBtn('all', 'All (' + rows.length + ')')}${filterBtn('buy', 'Buy signals')}${filterBtn('sell', 'Sell signals')}${filterBtn('dips', 'Dips of 3%+')}
+      ${errCount > 0 && html`<span className="down text-sm ml-2">${errCount} ticker${errCount > 1 ? 's' : ''} with errors</span>`}
+    </div>
+
+    <div className="panel overflow-x-auto mb-4">
+      <table className="w-full text-sm">
+        <thead><tr>
+          ${th('symbol', 'Ticker', '', 'text-left')}
+          <th className="text-left" title="Where we are in eToro's 24/5 week (New York time). Commodities show Open or Closed from data freshness">Session</th>
+          ${th('price', 'Price')}
+          ${th('chgPct', 'vs close', 'Price vs the last regular-session close (stocks) or the prior trading day close (others)')}
+          ${th('dipPct', 'Dip from high', 'Distance below the highest price in the last ~3 days of 15-minute candles')}
+          ${th('rsi', 'RSI', 'Wilder RSI(14) on 15-minute candles')}
+          ${th('adx', 'ADX', 'Trend strength: below 20 range, above 22 trend')}
+          ${th('lean', 'Lean', 'Same lean score as the CFD scanner, -100 (short) to +100 (long)', 'text-center')}
+          ${th('tier', 'Signal', 'Same five tiers as the CFD scanner', 'text-left')}
+          <th className="text-left">Setup</th><th className="text-left">Risk</th><th className="text-left">Flags</th>
+        </tr></thead>
+        <tbody>
+          ${shown.map(r => {
+            if (r.pending) return html`<tr key=${r.symbol} className="row" style=${{ cursor: 'default' }}><td className="font-medium">${r.symbol}</td><td colSpan="11" className="muted">No data yet. Press Update tickers.</td></tr>`;
+            if (r.error) return html`<tr key=${r.symbol} className="row" style=${{ cursor: 'default' }}><td className="font-medium">${r.symbol}</td><td colSpan="11" className="down">${r.error}${r.similar && r.similar.length ? html`<span className="muted"> Similar on eToro: ${r.similar.map(x => x.symbol).join(', ')}.</span>` : ''} <button className="btn ml-2" onClick=${() => removeSymbol(r.symbol)}>Remove</button></td></tr>`;
+            const a = r.a;
+            return html`<tr key=${r.symbol} className=${'row ' + (selected === r.symbol ? 'sel' : '')} style=${(r.stale || r.dataOld) ? { opacity: 0.55 } : null} onClick=${() => setSelected(r.symbol)}>
+              <td><div className="font-medium">${r.symbol}</div><div className="muted text-xs">${trShort(r.name)}</div></td>
+              <td><span className=${'tag ' + sessCls(r.session)}>${r.session}</span></td>
+              <td className="num text-right">${fmtPx(a.price)}</td>
+              <td className=${'num text-right ' + (r.chgPct == null ? 'muted' : r.chgPct >= 0 ? 'up' : 'down')}>${r.chgPct == null ? '-' : fmtSigned(r.chgPct, 2) + '%'}</td>
+              <td className=${'num text-right ' + (r.dipPct <= -5 ? 'warn' : 'muted')}>${r.dipPct.toFixed(1)}%</td>
+              <td className=${'num text-right ' + (a.rsi >= 70 || a.rsi <= 30 ? 'warn' : '')}>${a.rsi.toFixed(0)}</td>
+              <td className="num text-right">${a.adx.toFixed(0)} <span className="muted text-xs">${a.regime}</span></td>
+              <td>${leanBar(a.lean)}</td>
+              <td>${sigBadge(r)}</td>
+              <td>${a.entryType ? html`<span className=${'tag ' + (a.dir > 0 ? 'up' : 'down')}>${a.setup}${a.actionable ? '' : ' (weak)'}</span>` : html`<span className="muted text-xs">${a.setup}</span>`}</td>
+              <td>${riskBadge(r)}</td>
+              <td>${r.tradeable && html`<span className="tag up">ready</span>`}${r.stale && html`<span className="tag warn" title=${'Last candle ' + fmtAge(now - a.lastT) + ' ago'}>stale ${fmtAge(now - a.lastT)}</span>`}${r.dataOld && html`<span className="tag warn">old data</span>`}${r.wide && html`<span className="tag down">wide spread</span>`}</td>
+            </tr>`;
+          })}
+        </tbody>
+      </table>
+    </div>
+
+    ${sel && html`
+    <div className="panel p-4 mb-4">
+      <div className="flex flex-wrap justify-between gap-2 mb-3">
+        <h2 className="text-lg font-semibold">${sel.symbol}: levels and risk <span className="muted text-sm font-normal">${trShort(sel.name)} \u00B7 ${sel.type}${sel.exchange ? ' \u00B7 ' + sel.exchange : ''}</span></h2>
+        <div className="muted text-sm">ATR(15m) <span className="num text-[var(--text)]">${fmtPx(sel.a.atr)}</span> \u00B7 ${sel.windowDays.toFixed(1)} days of candles \u00B7 3-day high <span className="num text-[var(--text)]">${fmtPx(sel.windowHigh)}</span></div>
+      </div>
+      <div className="flex flex-wrap gap-6">
+        <div className="flex-1 min-w-[240px]"><div className="muted text-sm mb-1">Level ladder</div>
+          <table className="w-full text-sm num"><tbody>${levels(sel.a).map(x => html`<tr key=${x.l} style=${x.me ? { background: 'rgba(106,167,232,.12)' } : null}>
+            <td className=${'!py-1 ' + (x.me ? 'font-medium' : 'muted')} style=${{ fontFamily: "'IBM Plex Sans', sans-serif" }}>${x.l}</td><td className="text-right !py-1">${fmtPx(x.v)}</td>
+            <td className=${'text-right !py-1 ' + (x.me ? '' : (x.v > sel.a.price ? 'down' : 'up'))}>${x.me ? '' : fmtSigned((x.v - sel.a.price) / sel.a.atr, 2) + ' ATR'}</td></tr>`)}</tbody></table></div>
+        <div className="flex-[2] min-w-[300px]"><div className="muted text-sm mb-1">Trade plan at the current price (risk ${settings.riskPct}% of $${settings.equity.toLocaleString()})</div>
+          <div className="flex flex-wrap gap-6">${planCol(sel, 1)}${planCol(sel, -1)}</div>
+          <div className="muted text-xs mt-3">Share counts assume you can buy fractional or whole shares at the entry price and round down to what eToro allows. Overnight trading is thinner, so the risk rating adds points outside regular US hours.</div></div>
+      </div>
+    </div>`}
+
+    <div className="panel p-4 text-sm muted leading-relaxed">
+      <div className="text-[var(--text)] font-medium mb-1">About these numbers</div>
+      Prices are eToro chart candles (15 minutes, including the overnight session), not live bid/ask quotes, and the spread is an assumption you can change in Settings. Signals are the same screening rules as the CFD scanner tab and are not predictions or advice. The deepest-dip list is simply how far each price sits below its highest point in about three days. ANT is Anthropic, the company that makes Claude, and is shown here only as a mechanical reading like any other ticker.
+    </div>
+  </div>`;
+}
+const TrackerTabMemo = React.memo(TrackerTab);
 
 /* =====================================================================
    APP
@@ -1183,8 +1517,11 @@ function App() {
 
     <div role="tablist" className="flex gap-2 mb-4">
       <button role="tab" aria-selected=${tab === 'scanner'} className=${'tabbtn ' + (tab === 'scanner' ? 'on' : '')} onClick=${() => setTab('scanner')}>CFD scanner</button>
+      <button role="tab" aria-selected=${tab === 'tracker'} className=${'tabbtn ' + (tab === 'tracker' ? 'on' : '')} onClick=${() => setTab('tracker')}>Stock tracker</button>
       <button role="tab" aria-selected=${tab === 'research'} className=${'tabbtn ' + (tab === 'research' ? 'on' : '')} onClick=${() => setTab('research')}>Stock research</button>
     </div>
+
+    <div className=${tab === 'tracker' ? '' : 'hidden'}><${TrackerTabMemo} settings=${settings} events=${events} now=${Math.floor(now / 15000) * 15000} /></div>
 
     <div className=${tab === 'research' ? '' : 'hidden'}><${ResearchTab} /></div>
 
