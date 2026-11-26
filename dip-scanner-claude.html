@@ -1136,7 +1136,7 @@ function TrackerTab({ settings, events, now }) {
       <div className="panel p-3 text-sm"><div className="font-medium mb-1">Strongest signals now</div>
         ${hot.length === 0 ? html`<div className="muted">Nothing is leaning Buy or Sell right now.</div>` : hot.map(r => html`<div key=${r.symbol} className="flex items-center justify-between py-1" style=${{ cursor: 'pointer' }} onClick=${() => setSelected(r.symbol)}>
           <span><b>${r.symbol}</b> <span className="muted text-xs">${r.a.setup}</span></span><span>${sigBadge(r)} <span className="num muted text-xs">${fmtSigned(r.a.lean, 0)}</span></span></div>`)}</div>
-      <div className="panel p-3 text-sm"><div className="font-medium mb-1">Deepest dips (from the ~3-day high)</div>
+      <div className="panel p-3 text-sm"><div className="font-medium mb-1">Deepest dips (from the recent high)</div>
         ${deep.map(r => html`<div key=${r.symbol} className="flex items-center justify-between py-1" style=${{ cursor: 'pointer' }} onClick=${() => setSelected(r.symbol)}>
           <span><b>${r.symbol}</b> <span className="muted text-xs">${r.session}</span></span><span className=${'num ' + (r.dipPct <= -5 ? 'warn' : '')}>${r.dipPct.toFixed(1)}% ${sigBadge(r)}</span></div>`)}</div>
     </div>`}
@@ -1153,7 +1153,7 @@ function TrackerTab({ settings, events, now }) {
           <th className="text-left" title="Where we are in eToro's 24/5 week (New York time). Commodities show Open or Closed from data freshness">Session</th>
           ${th('price', 'Price')}
           ${th('chgPct', 'vs close', 'Price vs the last regular-session close (stocks) or the prior trading day close (others)')}
-          ${th('dipPct', 'Dip from high', 'Distance below the highest price in the last ~3 days of 15-minute candles')}
+          ${th('dipPct', 'Dip from high', 'Distance below the highest price in the fetched candles: 480 candles, about 5 days of continuous 24/5 trading')}
           ${th('rsi', 'RSI', 'Wilder RSI(14) on 15-minute candles')}
           ${th('adx', 'ADX', 'Trend strength: below 20 range, above 22 trend')}
           ${th('lean', 'Lean', 'Same lean score as the CFD scanner, -100 (short) to +100 (long)', 'text-center')}
@@ -1163,7 +1163,7 @@ function TrackerTab({ settings, events, now }) {
         <tbody>
           ${shown.map(r => {
             if (r.pending) return html`<tr key=${r.symbol} className="row" style=${{ cursor: 'default' }}><td className="font-medium">${r.symbol}</td><td colSpan="11" className="muted">No data yet. Press Update tickers.</td></tr>`;
-            if (r.error) return html`<tr key=${r.symbol} className="row" style=${{ cursor: 'default' }}><td className="font-medium">${r.symbol}</td><td colSpan="11" className="down">${r.error}${r.similar && r.similar.length ? html`<span className="muted"> Similar on eToro: ${r.similar.map(x => x.symbol).join(', ')}.</span>` : ''} <button className="btn ml-2" onClick=${() => removeSymbol(r.symbol)}>Remove</button></td></tr>`;
+            if (r.error) return html`<tr key=${r.symbol} className="row" style=${{ cursor: 'default' }}><td className="font-medium">${r.symbol}</td><td colSpan="11" className="down">${r.error}${r.similar && r.similar.length ? html`<span className="muted"> Similar on eToro: ${r.similar.map(x => x.symbol + (x.name ? ' (' + trShort(x.name) + ')' : '')).join(', ')}.</span>` : ''} <button className="btn ml-2" onClick=${() => removeSymbol(r.symbol)}>Remove</button></td></tr>`;
             const a = r.a;
             return html`<tr key=${r.symbol} className=${'row ' + (selected === r.symbol ? 'sel' : '')} style=${(r.stale || r.dataOld) ? { opacity: 0.55 } : null} onClick=${() => setSelected(r.symbol)}>
               <td><div className="font-medium">${r.symbol}</div><div className="muted text-xs">${trShort(r.name)}</div></td>
@@ -1188,7 +1188,7 @@ function TrackerTab({ settings, events, now }) {
     <div className="panel p-4 mb-4">
       <div className="flex flex-wrap justify-between gap-2 mb-3">
         <h2 className="text-lg font-semibold">${sel.symbol}: levels and risk <span className="muted text-sm font-normal">${trShort(sel.name)} \u00B7 ${sel.type}${sel.exchange ? ' \u00B7 ' + sel.exchange : ''}</span></h2>
-        <div className="muted text-sm">ATR(15m) <span className="num text-[var(--text)]">${fmtPx(sel.a.atr)}</span> \u00B7 ${sel.windowDays.toFixed(1)} days of candles \u00B7 3-day high <span className="num text-[var(--text)]">${fmtPx(sel.windowHigh)}</span></div>
+        <div className="muted text-sm">ATR(15m) <span className="num text-[var(--text)]">${fmtPx(sel.a.atr)}</span> \u00B7 ${sel.windowDays.toFixed(1)} days of candles \u00B7 window high <span className="num text-[var(--text)]">${fmtPx(sel.windowHigh)}</span></div>
       </div>
       <div className="flex flex-wrap gap-6">
         <div className="flex-1 min-w-[240px]"><div className="muted text-sm mb-1">Level ladder</div>
@@ -1203,7 +1203,7 @@ function TrackerTab({ settings, events, now }) {
 
     <div className="panel p-4 text-sm muted leading-relaxed">
       <div className="text-[var(--text)] font-medium mb-1">About these numbers</div>
-      Prices are eToro chart candles (15 minutes, including the overnight session), not live bid/ask quotes, and the spread is an assumption you can change in Settings. Signals are the same screening rules as the CFD scanner tab and are not predictions or advice. The deepest-dip list is simply how far each price sits below its highest point in about three days. ANT is Anthropic, the company that makes Claude, and is shown here only as a mechanical reading like any other ticker.
+      Prices are eToro chart candles (15 minutes, including the overnight session), not live bid/ask quotes, and the spread is an assumption you can change in Settings. Signals are the same screening rules as the CFD scanner tab and are not predictions or advice. The deepest-dip list is simply how far each price sits below its highest point in the fetched candles (about five days for a 24/5 stock). ANT is Anthropic, the company that makes Claude, and is shown here only as a mechanical reading like any other ticker.
     </div>
   </div>`;
 }
