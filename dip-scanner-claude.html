@@ -685,6 +685,318 @@ function buildTrackerRow(e, ctx, nowMs) {
     session: e.is247 ? (stale ? 'Closed' : base === 'Weekend' ? 'Weekend (open)' : base) : base,   // 24/7 instruments keep trading at the weekend
     chgPct: e.refClose ? (a.price / e.refClose - 1) * 100 : null };
 }
+
+/* ---------- Long-term buys: technical analysis on daily candles ----------
+   Nothing here predicts the future. It measures how volatile and how trending a stock has been, turns that into
+   scenario ranges, finds support levels, and applies stated rules to suggest a buy zone. */
+const LT_DEFAULT_SYMBOLS = ['NVDA', 'AMD', 'SNDK', 'SPCX', 'INTC', 'PLTR', 'GOOG', 'IOND', 'ANT.24-7', 'MU', 'ALAB', 'NBIS'];
+const LT_HORIZONS = [6, 12, 24];                        // months
+const LT_PATHS = 4000;                                  // simulated price paths per stock
+
+const ltFmt = (n) => n == null || !isFinite(n) ? '-' : Math.abs(n) >= 1000 ? n.toFixed(0) : Math.abs(n) >= 100 ? n.toFixed(1) : n.toFixed(2);
+const ltPctText = (x, d = 0) => (x >= 0 ? '+' : '') + (x * 100).toFixed(d) + '%';
+const ltMean = (v) => v.length ? v.reduce((a, b) => a + b, 0) / v.length : 0;
+const ltStd = (v) => { if (v.length < 2) return 0; const m = ltMean(v); return Math.sqrt(v.reduce((a, b) => a + (b - m) * (b - m), 0) / (v.length - 1)); };
+
+function ltSma(v, n, end) {
+  if (end == null) end = v.length - 1;
+  if (n < 1 || end - n + 1 < 0) return null;
+  let s = 0;
+  for (let i = end - n + 1; i <= end; i++) s += v[i];
+  return s / n;
+}
+
+// Weeks start on Monday (UTC). Returns weekly candles.
+function ltWeekly(candles) {
+  const wk = (t) => Math.floor((t - 4 * 86400000) / (7 * 86400000));
+  const out = [];
+  let key = null;
+  for (const c of candles) {
+    const k = wk(c.t);
+    if (k !== key) { out.push({ t: c.t, o: c.o, h: c.h, l: c.l, c: c.c, v: c.v || 0 }); key = k; }
+    else { const w = out[out.length - 1]; w.h = Math.max(w.h, c.h); w.l = Math.min(w.l, c.l); w.c = c.c; w.v += c.v || 0; }
+  }
+  return out;
+}
+
+// Swing highs and lows on weekly candles: a pivot beats the k weeks on each side of it
+function ltPivots(weekly, k = 3) {
+  const highs = [], lows = [];
+  for (let i = k; i < weekly.length - k; i++) {
+    let isH = true, isL = true;
+    for (let j = 1; j <= k; j++) {
+      if (!(weekly[i].h > weekly[i - j].h && weekly[i].h > weekly[i + j].h)) isH = false;
+      if (!(weekly[i].l < weekly[i - j].l && weekly[i].l < weekly[i + j].l)) isL = false;
+    }
+    if (isH) highs.push({ price: weekly[i].h, idx: i });
+    if (isL) lows.push({ price: weekly[i].l, idx: i });
+  }
+  return { highs, lows };
+}
+
+// Merge nearby price points into one level that remembers how many times price turned there
+function ltCluster(points, tol = 0.03) {
+  const sorted = [...points].sort((a, b) => a.price - b.price);
+  const out = [];
+  let group = [];
+  const flush = () => { if (group.length) out.push({ price: ltMean(group.map(g => g.price)), touches: group.length, last: Math.max(...group.map(g => g.idx)) }); group = []; };
+  for (const p of sorted) {
+    if (group.length && p.price > group[0].price * (1 + tol)) flush();
+    group.push(p);
+  }
+  flush();
+  return out;
+}
+
+function ltRng(seed) {
+  let a = seed >>> 0;
+  return function () { a = (a + 0x6D2B79F5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+}
+function ltHash(str) { let h = 2166136261; for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
+
+function ltPct(sorted, q) {
+  if (!sorted.length) return NaN;
+  const pos = (sorted.length - 1) * q, lo = Math.floor(pos), hi = Math.ceil(pos);
+  return sorted[lo] + (sorted[hi] - sorted[lo]) * (pos - lo);
+}
+
+/* Simulate price paths with a steady volatility and either no drift (neutral) or a trend drift.
+   Both use the same random numbers, so the only difference between them is the trend.
+   sigma: annual volatility, g: annual log drift for the trend scenario, T: years, steps: price points along the way. */
+function ltSimulate(price, sigma, g, T, steps, paths, seed) {
+  const rng = ltRng(seed);
+  const dt = T / steps, sd = sigma * Math.sqrt(dt), gd = g * dt;
+  const minN = new Float64Array(paths), maxN = new Float64Array(paths), finN = new Float64Array(paths);
+  const minT = new Float64Array(paths), maxT = new Float64Array(paths), finT = new Float64Array(paths);
+  let spare = null;
+  const normal = () => {
+    if (spare !== null) { const s = spare; spare = null; return s; }
+    let u = 0; while (u === 0) u = rng();
+    const v = rng(), r = Math.sqrt(-2 * Math.log(u));
+    spare = r * Math.sin(2 * Math.PI * v);
+    return r * Math.cos(2 * Math.PI * v);
+  };
+  for (let p = 0; p < paths; p++) {
+    let x = 0, mnX = 0, mxX = 0, mnY = 0, mxY = 0, y = 0;
+    for (let k = 1; k <= steps; k++) {
+      x += sd * normal();
+      y = x + gd * k;
+      if (x < mnX) mnX = x; if (x > mxX) mxX = x;
+      if (y < mnY) mnY = y; if (y > mxY) mxY = y;
+    }
+    minN[p] = mnX; maxN[p] = mxX; finN[p] = x; minT[p] = mnY; maxT[p] = mxY; finT[p] = y;
+  }
+  const summarise = (mn, mx, fin) => {
+    const a = Array.from(mn).sort((p, q) => p - q), b = Array.from(mx).sort((p, q) => p - q), f = Array.from(fin).sort((p, q) => p - q);
+    const px = (v) => price * Math.exp(v);
+    return {
+      lowTypical: px(ltPct(a, 0.5)), lowBad: px(ltPct(a, 0.1)),             // typical path low, and a low only 1 year in 10 goes below
+      highTypical: px(ltPct(b, 0.5)), highGood: px(ltPct(b, 0.9)),          // typical path high, and a high only 1 year in 10 goes above
+      final: { p10: px(ltPct(f, 0.1)), p50: px(ltPct(f, 0.5)), p90: px(ltPct(f, 0.9)) }
+    };
+  };
+  return { neutral: summarise(minN, maxN, finN), trend: summarise(minT, maxT, finT) };
+}
+
+/* Rating rules, kept separate so they can be tested on their own.
+   in: { enough, downtrend, trendScore, price, buy1, rr } */
+function ltRate(i) {
+  if (!i.enough) return { rating: 'Not enough history', why: 'There is less than about a year of daily history, so the long-term averages and levels cannot be trusted yet.' };
+  if (i.downtrend) return { rating: 'Avoid for now', why: 'The price is below a falling 200-day average. Buying into a downtrend is catching a falling knife, so wait for the price to climb back above it.' };
+  if (i.trendScore < 35) return { rating: 'Wait', why: 'The long-term trend is mixed, not clearly up. Wait for a clearer trend.' };
+  if (i.price <= i.buy1 * 1.02) {
+    if (i.rr != null && i.rr < 1.5) return { rating: 'Wait', why: 'The price is in the buy zone, but the typical upside is less than 1.5 times the risk to the invalidation price.' };
+    return { rating: 'Buy now', why: 'The trend is healthy and the price is at or near the suggested buy price.' };
+  }
+  return { rating: 'Accumulate on dips', why: 'The trend is healthy but the price is above the buy zone. Consider buying in steps if it pulls back to the buy price.' };
+}
+
+function ltAnalyse(candles, opts) {
+  const sym = (opts && opts.symbol) || '', horizonMonths = (opts && opts.horizonMonths) || 12, nowMs = (opts && opts.nowMs) || Date.now();
+  const clean = (candles || []).filter(c => [c.t, c.o, c.h, c.l, c.c].every(isFinite) && c.c > 0 && c.h > 0 && c.l > 0);
+  const n = clean.length;
+  if (n < 60) return { symbol: sym, n, error: 'Only ' + n + ' daily candles so far. Long-term analysis needs at least 60, and about a year for the full picture.' };
+
+  const closes = clean.map(c => c.c), highs = clean.map(c => c.h), lows = clean.map(c => c.l);
+  const price = closes[n - 1], lastT = clean[n - 1].t;
+  const years = Math.max((lastT - clean[0].t) / (365.25 * 86400000), 1 / 52);
+  const perYear = Math.min(366, Math.max(150, (n - 1) / years));            // about 252 for weekday data, about 365 for 24/7 data
+  const yearN = Math.min(n, Math.round(perYear)), qtrN = Math.min(n, Math.round(perYear / 4));
+  const enough = n >= 200 + 60 && years >= 0.9;
+  const warnings = [], reasons = [];
+
+  // volatility
+  const rets = [];
+  for (let i = 1; i < n; i++) rets.push(Math.log(closes[i] / closes[i - 1]));
+  const vol1y = ltStd(rets.slice(-yearN)) * Math.sqrt(perYear), vol3m = ltStd(rets.slice(-qtrN)) * Math.sqrt(perYear);
+  const sigma = Math.max(0.05, Math.sqrt(0.6 * vol1y * vol1y + 0.4 * vol3m * vol3m));
+
+  // trend, averages, momentum
+  const sma50 = ltSma(closes, 50), sma100 = ltSma(closes, 100), sma200 = ltSma(closes, 200);
+  const sma200Prev = n >= 260 ? ltSma(closes, 200, n - 1 - 60) : null;
+  const slope200 = sma200 != null && sma200Prev != null ? sma200 / sma200Prev - 1 : null;       // change in the 200-day average over 60 candles
+  const ret = (k) => n - 1 - k >= 0 ? price / closes[n - 1 - k] - 1 : null;
+  const r3m = ret(Math.round(perYear / 4)), r6m = ret(Math.round(perYear / 2)), r12m = ret(Math.round(perYear));
+  const high52 = Math.max(...highs.slice(-yearN)), low52 = Math.min(...lows.slice(-yearN));
+  const weekly = ltWeekly(clean);
+  const rsiD = rsiWilder(closes, 14), rsiW = weekly.length > 15 ? rsiWilder(weekly.map(w => w.c), 14) : null;
+  const atrW = weekly.length > 15 ? atrWilder(weekly, 14) : null;
+  const weeklyRange = atrW != null && atrW > 0 ? atrW : price * sigma / Math.sqrt(52);
+  let peak = closes[0], maxDD = 0;
+  for (const c of closes) { if (c > peak) peak = c; maxDD = Math.min(maxDD, c / peak - 1); }
+  const ddNow = price / high52 - 1;
+
+  // trend score, -100 to +100
+  let score = 0;
+  const add = (cond, pts) => { if (cond === true) score += pts; else if (cond === false) score -= pts; };
+  if (sma200 != null) { add(price > sma200, 25); add(sma50 > sma200, 15); }
+  if (slope200 != null) add(slope200 > 0, 15);
+  if (r12m != null) add(r12m > 0, 15);
+  if (r6m != null) add(r6m > 0, 10);
+  if (rsiW != null) { if (rsiW >= 45 && rsiW <= 75) score += 10; else if (rsiW < 40) score -= 10; }
+  if (ddNow >= -0.2) score += 10; else if (ddNow <= -0.4) score -= 10;
+  score = Math.max(-100, Math.min(100, score));
+  const trendLabel = score >= 70 ? 'Strong uptrend' : score >= 35 ? 'Uptrend' : score > -35 ? 'Mixed or sideways' : score > -70 ? 'Downtrend' : 'Strong downtrend';
+  const downtrend = sma200 != null && price < sma200 && slope200 != null && slope200 < 0;
+
+  // support and resistance from weekly swings, plus the usual long-term levels
+  const piv = ltPivots(weekly, 3);
+  const clusters = ltCluster([...piv.highs, ...piv.lows], 0.03).filter(c => c.price >= price * 0.5 && c.price <= price * 1.6);
+  const levelsBelow = clusters.filter(c => c.price < price * 0.995).map(c => ({ price: c.price, label: 'Weekly turning point (' + c.touches + (c.touches === 1 ? ' touch' : ' touches') + ')', strength: Math.min(3, c.touches) }));
+  const levelsAbove = clusters.filter(c => c.price > price * 1.005).map(c => ({ price: c.price, label: 'Resistance (' + c.touches + (c.touches === 1 ? ' touch' : ' touches') + ')', strength: Math.min(3, c.touches) }));
+  const sma50w = weekly.length >= 50 ? ltSma(weekly.map(w => w.c), 50) : null;
+  const extra = [];
+  if (sma200 != null && sma200 < price * 0.995) extra.push({ price: sma200, label: '200-day average', strength: 3 });
+  if (sma50w != null && sma50w < price * 0.995) extra.push({ price: sma50w, label: '50-week average', strength: 2 });
+  if (low52 < price * 0.995) extra.push({ price: low52, label: '52-week low', strength: 2 });
+  // Fibonacci pullback levels of the last big up-leg (the low must come before the high, and the leg must be at least 25%)
+  const fibN = Math.min(n, Math.round(perYear * 2)), hs = highs.slice(-fibN), ls = lows.slice(-fibN);
+  const iH = hs.indexOf(Math.max(...hs)), iL = ls.indexOf(Math.min(...ls));
+  let fib = null;
+  if (iL < iH && hs[iH] / ls[iL] >= 1.25) {
+    const H = hs[iH], L = ls[iL];
+    fib = { high: H, low: L, f382: H - 0.382 * (H - L), f50: H - 0.5 * (H - L), f618: H - 0.618 * (H - L) };
+    if (fib.f50 < price * 0.995) extra.push({ price: fib.f50, label: '50% pullback of the last big rise', strength: 2 });
+    if (fib.f618 < price * 0.995) extra.push({ price: fib.f618, label: '61.8% pullback of the last big rise', strength: 2 });
+  }
+  const supports = [...levelsBelow, ...extra].sort((a, b) => b.price - a.price);
+
+  // projected range
+  const T = horizonMonths / 12, steps = Math.max(20, Math.min(600, Math.round(T * perYear)));
+  const m = Math.min(n, Math.round(perYear)), lx = [];
+  for (let i = n - m; i < n; i++) lx.push(Math.log(closes[i]));
+  const xs = lx.map((_, i) => i), xm = ltMean(xs), ym = ltMean(lx);
+  let sxy = 0, sxx = 0;
+  for (let i = 0; i < m; i++) { sxy += (xs[i] - xm) * (lx[i] - ym); sxx += (xs[i] - xm) * (xs[i] - xm); }
+  const trendDrift = sxx > 0 ? (sxy / sxx) * perYear : 0;                       // how fast ln(price) has been rising per year
+  const g = Math.max(-0.30, Math.min(0.30, 0.5 * trendDrift));                   // half of that, capped at +/-30% a year
+  const sim = ltSimulate(price, sigma, g, T, steps, LT_PATHS, ltHash(sym + '|' + lastT + '|' + horizonMonths));
+  const proj = sim.trend;
+
+  // suggested buy prices
+  const lowFloor = proj.lowTypical * 0.97;
+  const usable = supports.filter(s => s.price >= Math.max(lowFloor, price * 0.5) && s.price <= price * 0.995);
+  const strong = usable.filter(s => s.strength >= 2);
+  let b1;
+  if (strong.length) b1 = { price: strong[0].price, label: strong[0].label };
+  else if (usable.length) b1 = { price: usable[0].price, label: usable[0].label };
+  else if (proj.lowTypical < price * 0.995) b1 = { price: proj.lowTypical, label: 'Typical low of the projected range' };
+  else b1 = { price: price * 0.95, label: '5% below the current price' };
+  const deeper = supports.filter(s => s.price <= b1.price * 0.95 && s.price >= price * 0.5);
+  const b2 = deeper.length ? { price: deeper[0].price, label: deeper[0].label } : { price: b1.price * 0.92, label: '8% below the first buy price' };
+  const invalidation = Math.max(b2.price - weeklyRange, b2.price * 0.7);
+  const rr = b1.price - invalidation > 0 ? (proj.highTypical - b1.price) / (b1.price - invalidation) : null;
+
+  const verdict = ltRate({ enough, downtrend, trendScore: score, price, buy1: b1.price, rr });
+
+  // plain-English reasons and warnings
+  if (sma200 != null) reasons.push('Price is ' + ltPctText(price / sma200 - 1) + ' ' + (price >= sma200 ? 'above' : 'below') + ' its 200-day average' + (slope200 != null ? ', which is ' + (slope200 >= 0 ? 'rising' : 'falling') : '') + '.');
+  if (r12m != null) reasons.push('It is ' + ltPctText(r12m) + ' over 12 months' + (r6m != null ? ' and ' + ltPctText(r6m) + ' over 6 months' : '') + '.');
+  reasons.push('It sits ' + ltPctText(ddNow) + ' from its 52-week high, and has fallen as much as ' + ltPctText(maxDD) + ' from a peak in the data.');
+  reasons.push('Volatility is about ' + (sigma * 100).toFixed(0) + '% a year, so a ' + horizonMonths + '-month range is wide.');
+  reasons.push('First buy price ' + ltFmt(b1.price) + ': ' + b1.label.toLowerCase() + '. Second, deeper price ' + ltFmt(b2.price) + ': ' + b2.label.toLowerCase() + '.');
+  if (!enough) warnings.push('Less than about a year of history: the 200-day average and long-term levels are limited, so treat everything here as rough.');
+  if (sigma > 0.6) warnings.push('Very volatile (about ' + (sigma * 100).toFixed(0) + '% a year): prices can swing far outside these ranges.');
+  if (sma200 != null && price / sma200 > 1.35) warnings.push('Extended: the price is ' + ltPctText(price / sma200 - 1) + ' above its 200-day average, so a pullback is common.');
+  if (ddNow <= -0.4) warnings.push('Deep drawdown: the price is ' + ltPctText(ddNow) + ' from its 52-week high.');
+  if (nowMs - lastT > 6 * 86400000) warnings.push('The newest daily candle is ' + Math.round((nowMs - lastT) / 86400000) + ' days old.');
+
+  // a thinned price history for the chart (about two years, at most ~260 points)
+  const chartN = Math.min(n, Math.round(perYear * 2)), stepC = Math.max(1, Math.ceil(chartN / 260));
+  const chart = { closes: [], sma200: [], t: [] };
+  for (let i = n - chartN; i < n; i += stepC) { chart.closes.push(closes[i]); chart.sma200.push(ltSma(closes, 200, i)); chart.t.push(clean[i].t); }
+  if ((n - chartN) % stepC !== 0 || chart.t[chart.t.length - 1] !== lastT) { chart.closes.push(price); chart.sma200.push(sma200); chart.t.push(lastT); }
+
+  return {
+    symbol: sym, n, perYear, years, price, lastT, enough, horizonMonths,
+    sma50, sma100, sma200, sma50w, slope200, r3m, r6m, r12m, rsiD, rsiW, high52, low52, maxDD, ddNow,
+    vol: { sigma, y1: vol1y, m3: vol3m }, trend: { score, label: trendLabel, downtrend }, fib,
+    supports: supports.slice(0, 6), resistances: levelsAbove.sort((a, b) => a.price - b.price).slice(0, 3),
+    projection: { T, steps, g, trendDrift, trend: sim.trend, neutral: sim.neutral },
+    buy: { b1, b2, invalidation, zoneHigh: b1.price, zoneLow: b2.price, distance: price / b1.price - 1, rr, weeklyRange },
+    rating: verdict.rating, ratingWhy: verdict.why, reasons, warnings, chart, fetchedAt: nowMs
+  };
+}
+
+// An SVG picture of the last two years, the 200-day average, the buy zone and the projected range
+function ltChartSvg(r, W, H) {
+  W = W || 640; H = H || 240;
+  const c = r.chart, pr = r.projection.trend, b = r.buy;
+  const padL = 8, padR = 62, padT = 12, padB = 18, hx = W * 0.68;
+  const vals = [...c.closes, b.b2.price, b.b1.price, pr.lowTypical, pr.highTypical, pr.final.p10, pr.final.p90].filter(isFinite);
+  const lo = Math.min(...vals) * 0.97, hi = Math.max(...vals) * 1.03;
+  const y = (v) => padT + (H - padT - padB) * (1 - (v - lo) / (hi - lo || 1));
+  const xh = (i) => padL + (hx - padL) * (i / Math.max(1, c.closes.length - 1));
+  const f = (n) => n.toFixed(1);
+  const line = (arr, cls) => { const pts = arr.map((v, i) => v == null ? null : f(xh(i)) + ',' + f(y(v))).filter(Boolean); return pts.length > 1 ? '<polyline class="' + cls + '" fill="none" points="' + pts.join(' ') + '"/>' : ''; };
+  const xEnd = W - padR, x0 = xh(c.closes.length - 1);
+  const labels = [];
+  const label = (txt, yy, cls) => { labels.push({ txt, yy, cls }); return ''; };
+  const drawLabels = () => {
+    labels.sort((a, b) => a.yy - b.yy);
+    for (let i = 1; i < labels.length; i++) if (labels[i].yy < labels[i - 1].yy + 11) labels[i].yy = labels[i - 1].yy + 11;     // keep every label readable
+    return labels.map(l => '<text x="' + (xEnd + 4) + '" y="' + f(l.yy + 3) + '" class="lt-lbl ' + l.cls + '">' + l.txt + '</text>').join('');
+  };
+  return '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" role="img" aria-label="Price history with buy zone and projected range" xmlns="http://www.w3.org/2000/svg">' +
+    '<style>.lt-px{stroke:#e6ebf1;stroke-width:1.6}.lt-ma{stroke:#e0a53a;stroke-width:1.2}.lt-lbl{font:10px sans-serif;fill:#8793a2}.lt-up{fill:#3fb68b}.lt-dn{fill:#e5645f}.lt-ac{fill:#6aa7e8}</style>' +
+    '<rect x="' + padL + '" y="' + f(y(b.zoneHigh)) + '" width="' + f(xEnd - padL) + '" height="' + f(Math.max(2, y(b.zoneLow) - y(b.zoneHigh))) + '" fill="#3fb68b" opacity="0.18"/>' +
+    '<polygon points="' + f(x0) + ',' + f(y(r.price)) + ' ' + f(xEnd) + ',' + f(y(pr.final.p90)) + ' ' + f(xEnd) + ',' + f(y(pr.final.p10)) + '" fill="#6aa7e8" opacity="0.22"/>' +
+    '<line x1="' + f(x0) + '" x2="' + f(xEnd) + '" y1="' + f(y(pr.highTypical)) + '" y2="' + f(y(pr.highTypical)) + '" stroke="#3fb68b" stroke-dasharray="4 3"/>' +
+    '<line x1="' + f(x0) + '" x2="' + f(xEnd) + '" y1="' + f(y(pr.lowTypical)) + '" y2="' + f(y(pr.lowTypical)) + '" stroke="#e5645f" stroke-dasharray="4 3"/>' +
+    line(c.sma200, 'lt-ma') + line(c.closes, 'lt-px') +
+    '<line x1="' + padL + '" x2="' + f(xEnd) + '" y1="' + f(y(r.price)) + '" y2="' + f(y(r.price)) + '" stroke="#6aa7e8" stroke-dasharray="2 3" opacity="0.7"/>' +
+    label('high ' + ltFmt(pr.highTypical), y(pr.highTypical), 'lt-up') + label('low ' + ltFmt(pr.lowTypical), y(pr.lowTypical), 'lt-dn') + label('buy ' + ltFmt(b.b1.price), y(b.zoneHigh), 'lt-up') +
+    label('now ' + ltFmt(r.price), y(r.price), 'lt-ac') + drawLabels() +
+    '</svg>';
+}
+
+/* ---------- Ownership activity: plain-English reading of the SEC data the Worker returns ---------- */
+const secMoney = (n) => !isFinite(n) || n == null ? '-' : n >= 1e9 ? '$' + (n / 1e9).toFixed(2) + ' billion' : n >= 1e6 ? '$' + (n / 1e6).toFixed(2) + ' million' : n >= 1e3 ? '$' + (n / 1e3).toFixed(0) + 'k' : '$' + Math.round(n);
+function secInsiderLines(ins) {
+  const lines = [];
+  if (!ins) return lines;
+  const b = ins.buys, s = ins.sells;
+  if (b.n === 0 && s.n === 0) lines.push('No open-market insider buying or selling in the last ' + ins.days + ' days.');
+  if (b.n > 0) lines.push(b.n + ' open-market ' + (b.n === 1 ? 'purchase' : 'purchases') + ' by ' + b.people + ' ' + (b.people === 1 ? 'person' : 'people') + ' (' + secMoney(b.usd) + ').');
+  if (s.n > 0) lines.push(s.n + ' open-market ' + (s.n === 1 ? 'sale' : 'sales') + ' by ' + s.people + ' ' + (s.people === 1 ? 'person' : 'people') + ' (' + secMoney(s.usd) + (s.planN > 0 && s.usd > 0 ? ', ' + Math.round(100 * s.planUsd / s.usd) + '% under pre-set 10b5-1 plans' : '') + ').');
+  if (ins.clusterBuy) lines.push(ins.clusterPeople + ' different insiders bought on the open market within 30 days. In studies, buying like this has been the most informative insider pattern, though the effect is weaker for large companies.');
+  else if (b.n > 0 && ins.officerBuy) lines.push('An officer or director bought with their own money. Studies find purchases more informative than sales, and the effect is mostly in smaller companies.');
+  if (b.n === 0 && s.n > 0) lines.push('Only sales. Most insider selling is routine (taxes, diversification, pre-set plans) and says little about the outlook.');
+  return lines;
+}
+function secHolderLines(holders, nowMs) {
+  const lines = [];
+  for (const h of holders || []) {
+    const age = Math.floor((nowMs - Date.parse(h.filed)) / 86400000);
+    if (h.activist && age <= 180) lines.push('A Schedule 13D was filed ' + age + ' days ago' + (h.holder ? ' by ' + h.holder : '') + (h.percent != null ? ' (' + h.percent + '%)' : '') + '. A 13D means a holder above 5% that may want to influence the company.');
+  }
+  return lines;
+}
+function secTag(d) {
+  if (!d || !d.insiders) return null;
+  const i = d.insiders;
+  return { text: i.buys.n + ' buy' + (i.buys.n === 1 ? '' : 's') + ' \u00B7 ' + i.sells.n + ' sale' + (i.sells.n === 1 ? '' : 's'), cluster: i.clusterBuy, buying: i.buys.n > i.sells.n && i.buys.n > 0 };
+}
 /*PURE_END*/
 
 /* ---------- data providers ---------- */
@@ -1209,6 +1521,302 @@ function TrackerTab({ settings, events, now }) {
 }
 const TrackerTabMemo = React.memo(TrackerTab);
 
+
+/* =====================================================================
+   LONG-TERM BUYS TAB  (daily candles from eToro through your Worker, analysed in this page)
+===================================================================== */
+const LT_KEYS = { cfg: 'dts2_lt', cache: 'dts2_lt_cache', sec: 'dts2_sec_cache', funds: 'dts2_sec_funds' };
+const secTicker = (sym) => { let t = String(sym || '').toUpperCase().replace(/\.24-7$/, ''); if (/^[A-Z]{1,5}\.[A-Z]$/.test(t)) t = t.replace('.', '-'); return /^[A-Z]{1,5}(-[A-Z])?$/.test(t) ? t : null; };
+const LT_ORDER = { 'Buy now': 0, 'Accumulate on dips': 1, 'Wait': 2, 'Avoid for now': 3, 'Not enough history': 4 };
+const ltRatingCls = (r) => r === 'Buy now' || r === 'Accumulate on dips' ? 'up' : r === 'Wait' ? 'warn' : r === 'Avoid for now' ? 'down' : 'muted';
+
+function LongTermTab({ settings }) {
+  const [cfg, setCfg] = useState(() => ({ symbols: LT_DEFAULT_SYMBOLS.join('\n'), horizon: 12, ...loadJSON(LT_KEYS.cfg, {}) }));
+  useEffect(() => saveJSON(LT_KEYS.cfg, cfg), [cfg]);
+  const cfgRef = useRef(cfg); cfgRef.current = cfg;
+  const [entries, setEntries] = useState(() => loadJSON(LT_KEYS.cache, {}).entries || {});
+  useEffect(() => saveJSON(LT_KEYS.cache, { entries }), [entries]);
+  const raw = useRef({});                                   // downloaded candles stay in memory, so changing the horizon needs no new download
+  const busyRef = useRef(false);
+  const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState('');
+  const [filter, setFilter] = useState('all');
+  const [selected, setSelected] = useState(null);
+  const [showSettings, setShowSettings] = useState(false);
+  const [showHow, setShowHow] = useState(false);
+  const upd = (k, v) => setCfg(c => ({ ...c, [k]: v }));
+  const [sec, setSec] = useState(() => loadJSON(LT_KEYS.sec, {}));
+  useEffect(() => saveJSON(LT_KEYS.sec, sec), [sec]);
+  const [funds, setFunds] = useState(() => loadJSON(LT_KEYS.funds, null));
+  useEffect(() => saveJSON(LT_KEYS.funds, funds), [funds]);
+  const [secBusy, setSecBusy] = useState('');
+
+  const workerCall = async (path) => {
+    const t = loadJSON(TR_KEYS.cfg, {});
+    const base = normalizeBase(t.workerUrl);
+    if (!base || !String(t.workerKey || '').trim()) throw new Error('Set your Worker address and access key first: open the Stock tracker tab, then Settings.');
+    let r;
+    try { r = await fetch(base + path, { headers: { 'x-access-key': String(t.workerKey).trim() } }); }
+    catch (e) { throw new Error('Could not reach the Worker. Check its address, and that DASHBOARD_ORIGIN lists this website.'); }
+    const j = await r.json().catch(() => ({}));
+    if (r.status === 401) throw new Error('The Worker rejected the access key');
+    if (!r.ok) { const err = new Error(j.error || ('HTTP ' + r.status)); err.setup = !!j.needsSetup; throw err; }
+    return j;
+  };
+  const loadSec = async (symbol, force) => {
+    setSec(p => ({ ...p, [symbol]: { ...(p[symbol] || {}), loading: true, error: null } }));
+    try { const j = await workerCall('/api/sec/ownership?symbol=' + encodeURIComponent(symbol) + '&days=90' + (force ? '&refresh=1' : '')); setSec(p => ({ ...p, [symbol]: { data: j, at: Date.now() } })); }
+    catch (e) { setSec(p => ({ ...p, [symbol]: { ...(p[symbol] || {}), loading: false, error: e.message, setup: !!e.setup } })); }
+  };
+  const loadFunds = async (force) => {
+    try { const j = await workerCall('/api/sec/funds?symbols=' + encodeURIComponent(parseSymbols(cfgRef.current.symbols).join(',')) + (force ? '&refresh=1' : '')); setFunds({ data: j, at: Date.now() }); }
+    catch (e) { setFunds(f => ({ ...(f || {}), error: e.message })); }
+  };
+  const loadAllSec = async () => {
+    if (secBusy) return;
+    const list = parseSymbols(cfgRef.current.symbols).filter(sy => !(entries[sy] && entries[sy].error) && secTicker(sy));
+    for (let i = 0; i < list.length; i++) { setSecBusy('SEC filings ' + (i + 1) + '/' + list.length + ' (' + list[i] + ')'); await loadSec(list[i], false); }
+    setSecBusy('Fund watch'); await loadFunds(false); setSecBusy('');
+  };
+
+  const analyse = (sym, candles, meta, horizon) => {
+    const r = ltAnalyse(candles, { symbol: sym, horizonMonths: horizon, nowMs: Date.now() });
+    return r.error ? { symbol: sym, name: meta.name, type: meta.type, error: r.error } : { ...r, name: meta.name || sym, type: meta.type || '' };
+  };
+
+  const refresh = useCallback(async () => {
+    if (busyRef.current) return;
+    const t = loadJSON(TR_KEYS.cfg, {});                    // the Worker address and key are the ones saved in the Stock tracker tab
+    const base = normalizeBase(t.workerUrl);
+    if (!base || !String(t.workerKey || '').trim()) { setProgress('Set your Worker address and access key first: open the Stock tracker tab, then Settings.'); return; }
+    const symbols = parseSymbols(cfgRef.current.symbols);
+    if (!symbols.length) { setProgress('Add some tickers in Settings first.'); setShowSettings(true); return; }
+    busyRef.current = true; setBusy(true);
+    let done = 0, failed = 0;
+    const horizon = cfgRef.current.horizon;
+    await trPool(symbols, 3, async (sym) => {
+      let entry;
+      try {
+        const r = await fetch(base + '/api/etoro/candles?symbol=' + encodeURIComponent(sym) + '&count=1000&interval=OneDay', { headers: { 'x-access-key': String(t.workerKey).trim() } });
+        const j = await r.json().catch(() => ({}));
+        if (r.status === 401) entry = { symbol: sym, error: 'The Worker rejected the access key' };
+        else if (!r.ok) entry = { symbol: sym, error: j.error || ('HTTP ' + r.status), similar: j.similar };
+        else {
+          const candles = (j.candles || []).map(c => ({ t: c[0], o: c[1], h: c[2], l: c[3], c: c[4], v: c[5] || 0 }));
+          raw.current[sym] = { candles, meta: { name: j.name, type: j.type } };
+          entry = analyse(sym, candles, { name: j.name, type: j.type }, horizon);
+        }
+      } catch (e) { entry = { symbol: sym, error: 'Could not reach the Worker. Check its address, and that DASHBOARD_ORIGIN lists this website.' }; }
+      done++; if (entry.error) failed++;
+      setProgress('Fetched ' + done + '/' + symbols.length + ' (' + sym + ')');
+      setEntries(prev => ({ ...prev, [sym]: entry }));
+    });
+    busyRef.current = false; setBusy(false);
+    setProgress('Analysed ' + (symbols.length - failed) + '/' + symbols.length + ' at ' + fmtMel(Date.now()));
+  }, []);
+
+  const changeHorizon = (h) => {
+    upd('horizon', h);
+    const next = {}; let all = true;
+    for (const sym of parseSymbols(cfgRef.current.symbols)) {
+      const r = raw.current[sym];
+      if (r) next[sym] = analyse(sym, r.candles, r.meta, h);
+      else if (!(entries[sym] && entries[sym].error)) all = false;       // never downloaded yet; an unknown symbol or one with errors cannot be recalculated and should not block the rest
+    }
+    setEntries(prev => ({ ...prev, ...next }));
+    setProgress(all ? 'Recalculated for ' + h + ' months.' : 'Press Update to analyse for ' + h + ' months.');
+  };
+
+  const syms = useMemo(() => parseSymbols(cfg.symbols), [cfg.symbols]);
+  const rows = useMemo(() => syms.map(sym => entries[sym] || { symbol: sym, pending: true }), [syms, entries]);
+  const ok = rows.filter(r => r.rating);
+  const shown = useMemo(() => {
+    const keep = rows.filter(r => filter === 'all' || (r.rating && ((filter === 'buy' && r.rating === 'Buy now') || (filter === 'acc' && r.rating === 'Accumulate on dips') || (filter === 'wait' && r.rating === 'Wait') || (filter === 'avoid' && r.rating === 'Avoid for now'))));
+    return keep.sort((x, y) => {
+      if (!x.rating && !y.rating) return 0; if (!x.rating) return 1; if (!y.rating) return -1;
+      const d = LT_ORDER[x.rating] - LT_ORDER[y.rating];
+      return d !== 0 ? d : Math.abs(x.buy ? x.buy.distance : 9) - Math.abs(y.buy ? y.buy.distance : 9);
+    });
+  }, [rows, filter]);
+  const sel = ok.find(r => r.symbol === selected) || null;
+  const buyNow = ok.filter(r => r.rating === 'Buy now');
+  const closest = ok.filter(r => r.rating === 'Accumulate on dips').sort((a, b) => a.buy.distance - b.buy.distance).slice(0, 4);
+  const errCount = rows.filter(r => r.error).length;
+  const lastFetch = Math.max(0, ...ok.map(r => r.fetchedAt));
+  const mismatch = ok.some(r => r.horizonMonths !== cfg.horizon);
+  const filterBtn = (k, label) => html`<button key=${k} className=${'btn ' + (filter === k ? 'btn-primary' : '')} onClick=${() => setFilter(k)}>${label}</button>`;
+  const pctTxt = (x) => ltPctText(x, 0);
+  const upsideOf = (r) => r.projection.trend.highTypical / r.price - 1;
+  const downsideOf = (r) => r.projection.trend.lowTypical / r.price - 1;
+  const removeSymbol = (sym) => setCfg(c => ({ ...c, symbols: parseSymbols(c.symbols).filter(x => x !== sym).join('\n') }));
+
+  const scen = (label, p) => html`<tr><td className="muted !py-1">${label}</td><td className="num text-right !py-1">${fmtPx(p.lowBad)}</td><td className="num text-right !py-1">${fmtPx(p.lowTypical)}</td><td className="num text-right !py-1">${fmtPx(p.highTypical)}</td><td className="num text-right !py-1">${fmtPx(p.highGood)}</td><td className="num text-right !py-1">${fmtPx(p.final.p10)} / ${fmtPx(p.final.p50)} / ${fmtPx(p.final.p90)}</td></tr>`;
+
+  return html`
+  <div>
+    <div className="flex flex-wrap items-center gap-3 mb-4">
+      <button className="btn btn-primary" disabled=${busy} onClick=${refresh}>${busy ? 'Analysing...' : 'Update analysis'}</button>
+      <label className="flex items-center gap-2 text-sm muted">Look ahead
+        <select value=${cfg.horizon} onChange=${(e) => changeHorizon(+e.target.value)}>${LT_HORIZONS.map(h => html`<option key=${h} value=${h}>${h} months</option>`)}</select></label>
+      <button className="btn" disabled=${!!secBusy} onClick=${loadAllSec} title="Insider trades (Form 4), 5% holders (13D/13G) and your fund watch (13F), from the SEC">${secBusy || 'Load SEC filings for all'}</button>
+      <button className="btn" onClick=${() => setShowSettings(v => !v)}>${showSettings ? 'Hide tickers' : 'Edit tickers'}</button>
+      <button className="btn" onClick=${() => setShowHow(v => !v)}>${showHow ? 'Hide method' : 'How it works'}</button>
+      <span className="text-sm muted">${progress}${lastFetch && !busy ? ' \u00B7 data ' + fmtAge(Date.now() - lastFetch) + ' old' : ''}</span>
+    </div>
+
+    ${mismatch && html`<div className="text-xs warn mb-3">Some rows were analysed for a different look-ahead. Press Update analysis to refresh them for ${cfg.horizon} months.</div>`}
+
+    ${showSettings && html`<div className="panel p-4 mb-4"><label className="flex flex-col gap-1 text-sm"><span className="muted">Tickers (one per line, exact eToro symbols). Stocks suit this tab best. Use the Stock tracker tab's Settings to search for exact symbols.</span>
+      <textarea rows="8" value=${cfg.symbols} onChange=${(e) => upd('symbols', e.target.value)}></textarea></label>
+      <div className="muted text-xs mt-2">It uses the Worker address and access key saved in the Stock tracker tab.</div></div>`}
+
+    ${showHow && html`<div className="panel p-4 mb-4 text-sm leading-relaxed">
+      <div className="font-medium mb-1">How these numbers are made</div>
+      <p className="muted mb-2">Nothing here predicts the future. The tab downloads about four years of daily candles from eToro and measures how the stock has actually behaved.</p>
+      <ul className="muted space-y-1" style=${{ listStyle: 'disc', paddingLeft: 18 }}>
+        <li><b className="text-[var(--text)]">Trend score</b> (-100 to +100): price against its 200-day average, 50 against 200 day, whether the 200-day average is rising, the 6 and 12 month returns, weekly RSI and the distance from the 52-week high.</li>
+        <li><b className="text-[var(--text)]">Predicted low and high:</b> 4,000 simulated price paths over your look-ahead, using the stock's own volatility and half of its past-year trend (capped at 30% a year). "Predicted low" is the lowest price a typical path touches, and "predicted high" is the highest. The detail panel also shows the 1-in-10 extremes. They are ranges, not forecasts: reality can land outside them.</li>
+        <li><b className="text-[var(--text)]">Buy price:</b> the highest sturdy support below the current price that is not far below the typical low. Supports come from weekly turning points that price has bounced off before, the 200-day and 50-week averages, the 52-week low and the 50% and 61.8% pullback levels of the last big rise. The second buy price is the next support down, and the invalidation price sits one weekly range below it.</li>
+        <li><b className="text-[var(--text)]">Rating:</b> Not enough history (under about a year), Avoid for now (price below a falling 200-day average), Wait (mixed trend, or poor reward for the risk), Buy now (healthy trend and price at or near the buy price) or Accumulate on dips (healthy trend, price above the buy zone).</li>
+      </ul>
+      <p className="muted mt-2">Not advice. It does not know your goals, tax or the company's finances, and a stock that looks cheap on a chart can keep falling. Corporate actions such as splits can distort old candles.</p></div>`}
+
+    ${(buyNow.length > 0 || closest.length > 0) && html`
+    <div className="grid gap-3 md:grid-cols-2 mb-4">
+      <div className="panel p-3 text-sm"><div className="font-medium mb-1">Buy now</div>
+        ${buyNow.length === 0 ? html`<div className="muted">Nothing is in its buy zone with a healthy trend right now.</div>` : buyNow.map(r => html`<div key=${r.symbol} className="flex items-center justify-between py-1" style=${{ cursor: 'pointer' }} onClick=${() => setSelected(r.symbol)}><span><b>${r.symbol}</b> <span className="muted text-xs">${r.trend.label}</span></span><span className="num">buy ${fmtPx(r.buy.b1.price)}</span></div>`)}</div>
+      <div className="panel p-3 text-sm"><div className="font-medium mb-1">Closest to their buy price</div>
+        ${closest.length === 0 ? html`<div className="muted">No healthy-trend stocks are waiting above a buy zone.</div>` : closest.map(r => html`<div key=${r.symbol} className="flex items-center justify-between py-1" style=${{ cursor: 'pointer' }} onClick=${() => setSelected(r.symbol)}><span><b>${r.symbol}</b> <span className="muted text-xs">buy ${fmtPx(r.buy.b1.price)}</span></span><span className="num warn">${pctTxt(-r.buy.distance)} away</span></div>`)}</div>
+    </div>`}
+
+    <div className="flex flex-wrap gap-2 mb-3 items-center">
+      ${filterBtn('all', 'All (' + rows.length + ')')}${filterBtn('buy', 'Buy now')}${filterBtn('acc', 'Accumulate on dips')}${filterBtn('wait', 'Wait')}${filterBtn('avoid', 'Avoid for now')}
+      ${errCount > 0 && html`<span className="down text-sm ml-2">${errCount} ticker${errCount > 1 ? 's' : ''} with errors or too little history</span>`}
+    </div>
+
+    <div className="panel overflow-x-auto mb-4">
+      <table className="w-full text-sm">
+        <thead><tr>
+          <th className="text-left">Ticker</th><th className="text-left">Rating</th><th className="text-right">Price</th><th className="text-left">Trend</th>
+          <th className="text-right" title="The suggested first buy price, with the deeper second price under it">Buy price</th>
+          <th className="text-right" title="How far the price would have to fall to reach the first buy price">To buy</th>
+          <th className="text-right" title="The lowest price a typical simulated path touches over your look-ahead. A range, not a forecast">Predicted low</th>
+          <th className="text-right" title="The highest price a typical simulated path touches over your look-ahead. A range, not a forecast">Predicted high</th>
+          <th className="text-right" title="Typical high against the first buy price, compared with the risk down to the invalidation price">Reward : risk</th>
+          <th className="text-right" title="Distance below the 52-week high">From 52w high</th><th className="text-right" title="Annual volatility from the last year and quarter">Volatility</th>
+        </tr></thead>
+        <tbody>
+          ${shown.map(r => {
+            if (r.pending) return html`<tr key=${r.symbol} className="row" style=${{ cursor: 'default' }}><td className="font-medium">${r.symbol}</td><td colSpan="10" className="muted">No analysis yet. Press Update analysis.</td></tr>`;
+            if (r.error) return html`<tr key=${r.symbol} className="row" style=${{ cursor: 'default' }}><td className="font-medium">${r.symbol}</td><td colSpan="10" className=${/Only \d+ daily candles/.test(r.error) ? 'warn' : 'down'}>${r.error}${r.similar && r.similar.length ? html`<span className="muted"> Similar on eToro: ${r.similar.map(x => x.symbol + (x.name ? ' (' + trShort(x.name) + ')' : '')).join(', ')}.</span>` : ''} <button className="btn ml-2" onClick=${() => removeSymbol(r.symbol)}>Remove</button></td></tr>`;
+            return html`<tr key=${r.symbol} className=${'row ' + (selected === r.symbol ? 'sel' : '')} onClick=${() => setSelected(r.symbol)}>
+              <td><div className="font-medium">${r.symbol}</div><div className="muted text-xs">${trShort(r.name)}</div>${(() => { const tg = secTag(sec[r.symbol] && sec[r.symbol].data); return tg ? html`<div className=${'text-xs ' + (tg.cluster ? 'up' : 'muted')} title="Open-market insider trades in the last 90 days (SEC Form 4)">${tg.cluster ? '\u25CF cluster buy \u00B7 ' : ''}${tg.text}</div>` : null; })()}</td>
+              <td><span className=${'tag ' + ltRatingCls(r.rating)} style=${{ fontWeight: r.rating === 'Buy now' ? 600 : 400, borderColor: r.rating === 'Buy now' ? 'var(--up)' : 'var(--line)' }}>${r.rating}</span></td>
+              <td className="num text-right">${fmtPx(r.price)}</td>
+              <td><span className=${r.trend.score >= 35 ? 'up' : r.trend.score <= -35 ? 'down' : 'muted'}>${r.trend.label}</span></td>
+              <td className="num text-right">${fmtPx(r.buy.b1.price)}<div className="muted text-xs">then ${fmtPx(r.buy.b2.price)}</div></td>
+              <td className=${'num text-right ' + (r.buy.distance <= 0.02 && (r.rating === 'Buy now' || r.rating === 'Accumulate on dips') ? 'up' : 'muted')} title=${r.buy.distance <= 0.02 && r.rating !== 'Buy now' && r.rating !== 'Accumulate on dips' ? 'The price is at this level, but the rating says wait or avoid, so it is not a buy signal' : ''}>${r.buy.distance <= 0.02 ? 'in zone' : pctTxt(-r.buy.distance)}</td>
+              <td className="num text-right down">${fmtPx(r.projection.trend.lowTypical)}<div className="text-xs">${pctTxt(downsideOf(r))}</div></td>
+              <td className="num text-right up">${fmtPx(r.projection.trend.highTypical)}<div className="text-xs">${pctTxt(upsideOf(r))}</div></td>
+              <td className="num text-right">${r.buy.rr == null ? '-' : r.buy.rr.toFixed(1) + ' : 1'}</td>
+              <td className=${'num text-right ' + (r.ddNow <= -0.4 ? 'warn' : 'muted')}>${pctTxt(r.ddNow)}</td>
+              <td className=${'num text-right ' + (r.vol.sigma > 0.6 ? 'warn' : 'muted')}>${(r.vol.sigma * 100).toFixed(0)}%</td>
+            </tr>`;
+          })}
+        </tbody>
+      </table>
+    </div>
+
+    ${sel && html`
+    <div className="panel p-4 mb-4">
+      <div className="flex flex-wrap justify-between gap-2 mb-2">
+        <h2 className="text-lg font-semibold">${sel.symbol} <span className="muted text-sm font-normal">${trShort(sel.name)}</span> <span className=${'tag ml-2 ' + ltRatingCls(sel.rating)}>${sel.rating}</span></h2>
+        <div className="muted text-sm">${sel.n} daily candles \u00B7 ${sel.years.toFixed(1)} years \u00B7 look-ahead ${sel.horizonMonths} months</div>
+      </div>
+      <div className="text-sm mb-3">${sel.ratingWhy}</div>
+      ${sel.warnings.map((w, i) => html`<div key=${i} className="text-xs warn mb-1">\u25CF ${w}</div>`)}
+      <div className="flex flex-wrap gap-6 mt-3">
+        <div className="flex-[3] min-w-[320px]">
+          <div dangerouslySetInnerHTML=${{ __html: window.innerWidth < 640 ? ltChartSvg(sel, 380, 250) : ltChartSvg(sel, 640, 240) }}></div>
+          <div className="muted text-xs mt-1">White: price (2 years). Amber: 200-day average. Green band: buy zone. Blue fan: 10th to 90th percentile of simulated final prices. Dashed lines: predicted high (green) and low (red).</div>
+        </div>
+        <div className="flex-[2] min-w-[260px]">
+          <div className="font-medium mb-1">Buy plan</div>
+          <table className="w-full text-sm"><tbody>
+            <tr><td className="muted !py-1">First buy price</td><td className="num text-right !py-1">${fmtPx(sel.buy.b1.price)}</td></tr>
+            <tr><td colSpan="2" className="muted text-xs !pt-0 !pb-2">${sel.buy.b1.label}</td></tr>
+            <tr><td className="muted !py-1">Second, deeper price</td><td className="num text-right !py-1">${fmtPx(sel.buy.b2.price)}</td></tr>
+            <tr><td colSpan="2" className="muted text-xs !pt-0 !pb-2">${sel.buy.b2.label}</td></tr>
+            <tr><td className="muted !py-1">Invalidation (thesis broken below)</td><td className="num text-right !py-1 down">${fmtPx(sel.buy.invalidation)}</td></tr>
+            <tr><td className="muted !py-1">Reward : risk from the first price</td><td className="num text-right !py-1">${sel.buy.rr == null ? '-' : sel.buy.rr.toFixed(1) + ' : 1'}</td></tr>
+          </tbody></table>
+          <div className="muted text-xs mt-2">Idea: buy in steps rather than all at once, and re-check if the price closes below the invalidation level.</div>
+        </div>
+      </div>
+
+      <div className="font-medium mt-4 mb-1">Projected range over ${sel.horizonMonths} months</div>
+      <div className="overflow-x-auto"><table className="w-full text-sm">
+        <thead><tr><th className="text-left"></th><th className="text-right" title="A low that only 1 simulated path in 10 goes below">Low (1 in 10)</th><th className="text-right" title="The lowest price a typical path touches">Predicted low</th><th className="text-right" title="The highest price a typical path touches">Predicted high</th><th className="text-right" title="A high that only 1 simulated path in 10 goes above">High (1 in 10)</th><th className="text-right" title="Price at the end of the look-ahead">End price: 10th / 50th / 90th</th></tr></thead>
+        <tbody>${scen('With the past-year trend (half, capped)', sel.projection.trend)}${scen('No trend (neutral)', sel.projection.neutral)}</tbody></table></div>
+      <div className="muted text-xs mt-1">Volatility ${(sel.vol.sigma * 100).toFixed(0)}% a year (${(sel.vol.y1 * 100).toFixed(0)}% over the last year, ${(sel.vol.m3 * 100).toFixed(0)}% over the last quarter). Trend used: ${pctTxt(sel.projection.g)} a year.</div>
+
+      <div className="grid gap-6 mt-4 md:grid-cols-3 text-sm">
+        <div><div className="font-medium mb-1">Why</div><ul className="space-y-1 muted" style=${{ listStyle: 'disc', paddingLeft: 18 }}>${sel.reasons.map((x, i) => html`<li key=${i}>${x}</li>`)}</ul></div>
+        <div><div className="font-medium mb-1">Support levels below the price</div>
+          ${sel.supports.length === 0 ? html`<div className="muted">None found nearby.</div>` : sel.supports.map((x, i) => html`<div key=${i} className="flex justify-between gap-3 py-0.5"><span className="muted">${x.label}</span><span className="num">${fmtPx(x.price)} <span className="muted">${pctTxt(x.price / sel.price - 1)}</span></span></div>`)}
+          ${sel.resistances.length > 0 && html`<div className="font-medium mt-3 mb-1">Resistance above</div>${sel.resistances.map((x, i) => html`<div key=${i} className="flex justify-between gap-3 py-0.5"><span className="muted">${x.label}</span><span className="num">${fmtPx(x.price)} <span className="muted">${pctTxt(x.price / sel.price - 1)}</span></span></div>`)}`}</div>
+        <div><div className="font-medium mb-1">Numbers</div>
+          ${[['200-day average', sel.sma200], ['50-day average', sel.sma50], ['50-week average', sel.sma50w], ['52-week high', sel.high52], ['52-week low', sel.low52]].map(([l, v]) => html`<div key=${l} className="flex justify-between py-0.5"><span className="muted">${l}</span><span className="num">${v == null ? '-' : fmtPx(v)}</span></div>`)}
+          <div className="flex justify-between py-0.5"><span className="muted">RSI daily / weekly</span><span className="num">${sel.rsiD == null ? '-' : sel.rsiD.toFixed(0)} / ${sel.rsiW == null ? '-' : sel.rsiW.toFixed(0)}</span></div>
+          <div className="flex justify-between py-0.5"><span className="muted">Return 3 / 6 / 12 months</span><span className="num">${[sel.r3m, sel.r6m, sel.r12m].map(v => v == null ? '-' : pctTxt(v)).join(' / ')}</span></div>
+          <div className="flex justify-between py-0.5"><span className="muted">Worst fall in the data</span><span className="num">${pctTxt(sel.maxDD)}</span></div>
+          <div className="flex justify-between py-0.5"><span className="muted">Trend score</span><span className="num">${sel.trend.score}</span></div></div>
+      </div>
+      <div className="mt-6 pt-4" style=${{ borderTop: '1px solid var(--line)' }}>
+        <div className="flex flex-wrap items-center gap-3 mb-1">
+          <div className="font-medium">Ownership activity (SEC filings)</div>
+          <button className="btn" disabled=${!!(sec[sel.symbol] && sec[sel.symbol].loading)} onClick=${() => loadSec(sel.symbol, !!(sec[sel.symbol] && sec[sel.symbol].data))}>${sec[sel.symbol] && sec[sel.symbol].loading ? 'Loading...' : sec[sel.symbol] && sec[sel.symbol].data ? 'Refresh' : 'Load SEC filings'}</button>
+          ${sec[sel.symbol] && sec[sel.symbol].data && html`<span className="muted text-xs">${sec[sel.symbol].data.company} \u00B7 ${sec[sel.symbol].data.cached ? 'saved copy, ' : ''}checked ${fmtAge(Date.now() - sec[sel.symbol].at)} ago</span>`}
+        </div>
+        <div className="muted text-xs mb-2">Who is buying and selling the company's own stock, and who holds more than 5%. This is context, not a signal, and it does not change the rating.</div>
+        ${sec[sel.symbol] && sec[sel.symbol].error && html`<div className=${'text-sm mb-2 ' + (sec[sel.symbol].setup ? 'warn' : 'down')}>${sec[sel.symbol].error}</div>`}
+        ${(() => {
+          const d = sec[sel.symbol] && sec[sel.symbol].data;
+          if (!d) return html`<div className="muted text-sm">Press Load SEC filings. The first time takes several seconds, because each filing is read separately.</div>`;
+          const ins = d.insiders, lines = secInsiderLines(ins), hl = secHolderLines(d.holders, Date.now());
+          const fundRows = funds && funds.data && funds.data.configured ? funds.data.funds.map(f => ({ f, p: f.positions ? f.positions[sel.symbol] : null })) : [];
+          return html`
+            <div className="mb-2">${ins.clusterBuy && html`<span className="tag up mr-2">Cluster buy</span>`}${ins.officerBuy && html`<span className="tag up mr-2">Officer or director bought</span>`}</div>
+            <ul className="text-sm space-y-1 mb-2" style=${{ listStyle: 'disc', paddingLeft: 18 }}>${[...lines, ...hl].map((x, i) => html`<li key=${i}>${x}</li>`)}</ul>
+            ${(ins.truncated || ins.failed > 0 || ins.stopped || ins.ignored > 0) && html`<div className="muted text-xs mb-2">Read ${ins.read} of ${ins.filings} Form 4 filings in the last ${ins.days} days${ins.truncated ? ' (the newest ones, to keep it quick)' : ''}${ins.failed > 0 ? ', and ' + ins.failed + ' could not be read' : ''}. ${ins.ignored} award, option-exercise, tax or gift lines were ignored because they say nothing about conviction.${ins.stopped ? ' Stopped early: ' + ins.stopped + '.' : ''}</div>`}
+            ${ins.trades.length > 0 && html`<div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr><th className="text-left">Date</th><th className="text-left">Who</th><th className="text-left">Trade</th><th className="text-right">Shares</th><th className="text-right">Price</th><th className="text-right">Value</th><th className="text-left">Plan</th><th></th></tr></thead><tbody>
+              ${ins.trades.slice(0, 15).map((t, i) => html`<tr key=${i}><td className="num !py-1">${t.date}</td><td className="!py-1">${t.who}<div className="muted text-xs">${t.role}${t.direct ? '' : ' \u00B7 held indirectly'}${t.joint ? ' \u00B7 joint filing' : ''}</div></td>
+                <td className=${'!py-1 ' + (t.code === 'P' ? 'up' : 'down')}>${t.code === 'P' ? 'Bought' : 'Sold'}</td><td className="num text-right !py-1">${Math.round(t.shares).toLocaleString('en-US')}</td><td className="num text-right !py-1">${t.price == null ? '-' : fmtPx(t.price)}</td><td className="num text-right !py-1">${secMoney(t.usd)}</td>
+                <td className="muted !py-1">${t.plan ? '10b5-1 plan' : ''}</td><td className="!py-1"><a href=${'https://www.sec.gov/Archives/edgar/data/' + d.cik + '/' + t.acc.replace(/-/g, '') + '/' + t.acc + '-index.htm'} target="_blank" rel="noopener noreferrer" className="muted underline">filing</a></td></tr>`)}</tbody></table></div>`}
+            ${d.holders.length > 0 && html`<div className="font-medium mt-4 mb-1">Holders above 5% (Schedules 13D and 13G)</div>
+              <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr><th className="text-left">Filed</th><th className="text-left">Form</th><th className="text-left">Holder</th><th className="text-right">Stake</th><th></th></tr></thead><tbody>
+              ${d.holders.map((h, i) => html`<tr key=${i}><td className="num !py-1">${h.filed}</td><td className=${'!py-1 ' + (h.activist ? 'warn' : '')}>${h.form}</td><td className="!py-1">${h.holder || html`<span className="muted">open the filing for the name</span>`}</td><td className="num text-right !py-1">${h.percent != null ? h.percent + '%' : '-'}${h.shares != null ? html`<div className="muted text-xs">${Math.round(h.shares).toLocaleString('en-US')} shares</div>` : ''}</td><td className="!py-1"><a href=${h.url} target="_blank" rel="noopener noreferrer" className="muted underline">filing</a></td></tr>`)}</tbody></table></div>
+              <div className="muted text-xs mt-1">A 13G is a passive holder, and a 13D can signal intent to influence the company. A list entry marked unreadable may include a filing the company itself made about another company.</div>`}
+            <div className="font-medium mt-4 mb-1">Fund watch (Form 13F)</div>
+            ${!(funds && funds.data && funds.data.configured) ? html`<div className="muted text-sm">${funds && funds.error ? funds.error : 'Off. Fund holdings are filed per fund, not per company, so EDGAR cannot list who owns a stock. Set SEC_FUNDS on the Worker to the funds you want to follow (their CIK numbers), then press Load SEC filings for all.'}</div>` : html`
+              <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr><th className="text-left">Fund</th><th className="text-left">Quarter</th><th className="text-right">Shares</th><th className="text-right">Change</th></tr></thead><tbody>
+              ${fundRows.map(({ f, p }, i) => f.error ? html`<tr key=${i}><td className="!py-1">${f.fund || 'CIK ' + f.cik}</td><td colSpan="3" className="down !py-1">${f.error}</td></tr>` : html`<tr key=${i}><td className="!py-1"><a href=${f.url} target="_blank" rel="noopener noreferrer" className="underline">${f.fund}</a></td><td className="num !py-1">${f.report}</td>
+                <td className="num text-right !py-1">${p ? Math.round(p.shares).toLocaleString('en-US') : html`<span className="muted">not found</span>`}</td>
+                <td className=${'num text-right !py-1 ' + (p && p.isNew ? 'up' : p && p.change != null ? (p.change > 0.005 ? 'up' : p.change < -0.005 ? 'down' : 'muted') : 'muted')}>${p ? (p.isNew ? 'new position' : p.change == null ? '-' : ltPctText(p.change, 0)) : ''}</td></tr>`)}</tbody></table></div>
+              <div className="muted text-xs mt-1">13F filings show holdings at the end of a quarter and arrive up to 45 days later, so they are stale by the time you see them. Companies are matched by name, so "not found" can also mean the name did not match.</div>`}
+            <div className="muted text-xs mt-3">Insider purchases are the informative part: in studies they predicted modestly better returns over the following months, mostly in smaller companies, while sales mostly reflect tax and diversification. Large companies like most of your list show the weakest effect. Past patterns are not a promise.</div>`;
+        })()}
+      </div>
+    </div>`}
+
+    <div className="panel p-4 text-sm muted leading-relaxed">
+      <div className="text-[var(--text)] font-medium mb-1">Read this first</div>
+      These are technical-analysis ranges and rule-based buy zones built from past prices. They are not predictions, price targets or advice, and they know nothing about earnings, valuation, news or your own situation. Predicted lows and highs are what typical simulated paths do given the stock's past volatility and trend; real prices can go well beyond them. ANT is Anthropic, the company that makes Claude, and gets the same mechanical treatment as every other ticker. I am not a financial adviser.
+    </div>
+  </div>`;
+}
+const LongTermTabMemo = React.memo(LongTermTab);
+
 /* =====================================================================
    APP
 ===================================================================== */
@@ -1518,10 +2126,13 @@ function App() {
     <div role="tablist" className="flex gap-2 mb-4">
       <button role="tab" aria-selected=${tab === 'scanner'} className=${'tabbtn ' + (tab === 'scanner' ? 'on' : '')} onClick=${() => setTab('scanner')}>CFD scanner</button>
       <button role="tab" aria-selected=${tab === 'tracker'} className=${'tabbtn ' + (tab === 'tracker' ? 'on' : '')} onClick=${() => setTab('tracker')}>Stock tracker</button>
+      <button role="tab" aria-selected=${tab === 'longterm'} className=${'tabbtn ' + (tab === 'longterm' ? 'on' : '')} onClick=${() => setTab('longterm')}>Long-term buys</button>
       <button role="tab" aria-selected=${tab === 'research'} className=${'tabbtn ' + (tab === 'research' ? 'on' : '')} onClick=${() => setTab('research')}>Stock research</button>
     </div>
 
     <div className=${tab === 'tracker' ? '' : 'hidden'}><${TrackerTabMemo} settings=${settings} events=${events} now=${Math.floor(now / 15000) * 15000} /></div>
+
+    <div className=${tab === 'longterm' ? '' : 'hidden'}><${LongTermTabMemo} settings=${settings} /></div>
 
     <div className=${tab === 'research' ? '' : 'hidden'}><${ResearchTab} /></div>
 
